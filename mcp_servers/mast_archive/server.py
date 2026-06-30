@@ -103,42 +103,40 @@ def _mast_filtered_query(
     import json
     search_url = "https://mast.stsci.edu/api/v0/invoke"
     
+    filters = []
+    if mission:
+        filters.append({"paramName": "obs_collection", "values": [mission]})
+
     if ra is not None and dec is not None:
-        # Use standard CAOM Cone search (standard for public MAST API)
-        request_obj = {
-            "service": "Mast.Caom.Cone",
-            "params": {
-                "ra": ra,
-                "dec": dec,
-                "radius": radius
-            },
-            "format": "json",
-            "pagesize": max_results * 5 if mission else max_results,
-            "page": 1
-        }
-        search_params = {
-            "request": json.dumps(request_obj)
-        }
-    else:
-        # Fallback to name-based position search
-        filters = []
-        if mission:
-            filters.append({"paramName": "obs_collection", "values": [mission]})
+        # Use standard CAOM Cone search but with filtering via Mast.Caom.Filtered.Position
         request_obj = {
             "service": "Mast.Caom.Filtered.Position",
+            "format": "json",
+            "pagesize": max_results,
+            "page": 1,
             "params": {
                 "columns": "*",
                 "filters": filters,
-                "position": target,
-                "radius": radius,
-                "pagesize": max_results,
-                "page": 1,
-                "format": "json"
+                "position": f"{ra}, {dec}, {radius}"
             }
         }
-        search_params = {
-            "request": json.dumps(request_obj)
+    else:
+        # Fallback to name-based search using Mast.Caom.Filtered
+        filters.append({"paramName": "target_name", "values": [], "freeText": f"%{target}%"})
+        request_obj = {
+            "service": "Mast.Caom.Filtered",
+            "format": "json",
+            "pagesize": max_results,
+            "page": 1,
+            "params": {
+                "columns": "*",
+                "filters": filters
+            }
         }
+        
+    search_params = {
+        "request": json.dumps(request_obj)
+    }
 
     try:
         response = requests.post(
@@ -153,17 +151,7 @@ def _mast_filtered_query(
         response.raise_for_status()
         data = response.json()
         raw_results = data.get("data", [])
-        
-        # If we did a cone search, filter by mission client-side
-        if ra is not None and dec is not None and mission:
-            filtered = []
-            for obs in raw_results:
-                coll = obs.get("obs_collection", "")
-                if coll and mission.upper() in coll.upper():
-                    filtered.append(obs)
-            return filtered[:max_results]
-            
-        return raw_results[:max_results]
+        return raw_results
     except Exception as e:
         logger.error(f"MAST filtered query failed: {e}")
         return []
@@ -219,6 +207,8 @@ def search_observations(
         
         jpeg_url = obs.get("jpegURL")
         if jpeg_url:
+            if jpeg_url.startswith("mast:"):
+                jpeg_url = f"https://mast.stsci.edu/api/v0.1/Download/file?uri={jpeg_url}"
             output_lines.append(f"- **Preview Image:** [View Preview]({jpeg_url})")
             
         output_lines.append("")
@@ -331,9 +321,10 @@ def get_observation_summary(target: str) -> str:
         date_range = f"MJD {min(dates):.1f} to {max(dates):.1f}"
 
     # Find any observations with a preview image (prioritize JWST, then HST, then others)
+    # ONLY select from actual 2D images (dataproduct_type == image) to avoid tiny placeholder icons for data cubes.
     preview_obs = None
     for obs in results:
-        if obs.get("jpegURL"):
+        if obs.get("jpegURL") and obs.get("dataproduct_type", "").lower() == "image":
             mission = obs.get("obs_collection", "").upper()
             if "JWST" in mission:
                 preview_obs = obs
@@ -347,30 +338,11 @@ def get_observation_summary(target: str) -> str:
 
     preview_section = ""
     if preview_obs:
-        preview_section = f"""
-### High-Resolution Preview Image
-- **Mission:** {preview_obs.get('obs_collection', 'Unknown')}
-- **Instrument:** {preview_obs.get('instrument_name', 'Unknown')}
-- **Description:** {preview_obs.get('obs_title', 'Target observation field')}
-- **Preview URL:** {preview_obs.get('jpegURL')}
-"""
+        raw_url = preview_obs.get('jpegURL')
+        preview_url = f"https://mast.stsci.edu/api/v0.1/Download/file?uri={raw_url}" if raw_url and raw_url.startswith("mast:") else raw_url
+        preview_section = f"""### High-Resolution Preview Image\n- **Mission:** {preview_obs.get('obs_collection', 'Unknown')}\n- **Instrument:** {preview_obs.get('instrument_name', 'Unknown')}\n- **Description:** {preview_obs.get('obs_title', 'Target observation field')}\n- **Preview URL:** {preview_url}\n"""
 
-    output = f"""## Observation Summary for '{target}'
-
-### Overview
-- **Total Observations:** {len(results)}
-- **Missions:** {', '.join(sorted(missions))}
-- **Instruments:** {', '.join(sorted(instruments))}
-- **Wavelength Coverage:** {', '.join(sorted(wavelengths))}
-- **Data Types:** {', '.join(sorted(data_types))}
-- **Date Range:** {date_range if date_range else 'N/A'}
-
-### Significance
-This target has been observed by {len(missions)} mission(s) using {len(instruments)} instrument(s),
-covering {len(wavelengths)} wavelength region(s). This indicates {'strong' if len(results) > 20 else 'moderate' if len(results) > 5 else 'limited'} scientific interest.
-{preview_section}
-*Data source: MAST (https://archive.stsci.edu)*
-"""
+    output = f"## Observation Summary for '{target}'\n\n### Overview\n- **Total Observations:** {len(results)}\n- **Missions:** {', '.join(sorted(missions))}\n- **Instruments:** {', '.join(sorted(instruments))}\n- **Wavelength Coverage:** {', '.join(sorted(wavelengths))}\n- **Data Types:** {', '.join(sorted(data_types))}\n- **Date Range:** {date_range if date_range else 'N/A'}\n\n### Significance\nThis target has been observed by {len(missions)} mission(s) using {len(instruments)} instrument(s),\ncovering {len(wavelengths)} wavelength region(s). This indicates {'strong' if len(results) > 20 else 'moderate' if len(results) > 5 else 'limited'} scientific interest.\n{preview_section}\n*Data source: MAST (https://archive.stsci.edu)*\n"
     return output
 
 

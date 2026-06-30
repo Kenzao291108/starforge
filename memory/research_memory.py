@@ -110,7 +110,7 @@ class ResearchMemoryManager:
         """Retrieve all exoplanets/stellar systems on the watchlist."""
         return self.watchlist
 
-    def update_preferences(self, detail_level: Optional[str] = None, favorite_categories: Optional[List[str]] = None, default_survey: Optional[str] = None, skyview_color_lut: Optional[str] = None) -> None:
+    def update_preferences(self, detail_level: Optional[str] = None, favorite_categories: Optional[List[str]] = None, default_survey: Optional[str] = None, skyview_color_lut: Optional[str] = None, skyview_fov_arcmin: Optional[float] = None) -> None:
         """Update research preferences."""
         if detail_level:
             self.preferences["detail_level"] = detail_level
@@ -120,6 +120,8 @@ class ResearchMemoryManager:
             self.preferences["default_survey"] = default_survey
         if skyview_color_lut:
             self.preferences["skyview_color_lut"] = skyview_color_lut
+        if skyview_fov_arcmin is not None:
+            self.preferences["skyview_fov_arcmin"] = skyview_fov_arcmin
         self._save_json(self.preferences_file, self.preferences)
 
     def get_preferences(self) -> Dict[str, Any]:

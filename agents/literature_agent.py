@@ -16,7 +16,7 @@ arxiv_toolset = McpToolset(
             command=sys.executable,
             args=[arxiv_path],
         ),
-        timeout=30.0,
+        timeout=60.0,
     )
 )
 

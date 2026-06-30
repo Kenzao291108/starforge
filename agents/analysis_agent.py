@@ -16,7 +16,7 @@ skyview_toolset = McpToolset(
             command=sys.executable,
             args=[skyview_path],
         ),
-        timeout=30.0,
+        timeout=60.0,
     )
 )
 
@@ -34,9 +34,14 @@ Follow these steps:
    - Habitability indicators (e.g., equilibrium temperature, location relative to the host star's habitable zone).
    - Surface gravity estimates.
    - Host star properties (spectral type, luminosity, temperature) and their implications for the system's planets.
-3. Check the conversation history first. If the Query Agent found and passed a high-resolution space observatory preview image URL (labeled as 'MAST High-Res Preview URL') from JWST or HST/Hubble, use that URL and its metadata as the target sky image and skip calling `get_sky_image`. Otherwise (if no high-resolution MAST image is in history), retrieve a sky image of the target host star using the `get_sky_image` tool without specifying a survey or size/field of view, letting the tool use the user's preferred survey and its native optimal scale.
-4. Include the image metadata, source telescope (e.g. 'James Webb Space Telescope (JWST)', 'Hubble Space Telescope (HST)', or 'SkyView DSS Survey'), and URL in your report. Ensure you explicitly write the URL using the pattern **Image URL:** <URL> so that the system and subsequent agents can easily extract it.
-5. Summarize your scientific findings and the sky image reference. Format this analysis clearly to pass to the Literature Scout Agent.
+3. You MUST call the `get_sky_image` tool with the target name to retrieve a sky image. The tool automatically uses the user's preferred survey from their settings. Do NOT pass a survey argument — let the tool choose.
+4. Include the image URL returned by the tool in your final output using exactly this format: **Image URL:** <URL>
+5. CRITICAL RULES:
+   - ALWAYS call `get_sky_image`. Never skip it.
+   - NEVER invent, guess, or hallucinate image URLs.
+   - NEVER use Wikipedia or Wikimedia URLs.
+   - ONLY use the exact URL returned by the `get_sky_image` tool.
+   - Place the **Image URL:** on its own line with a blank line after it.
 
 Focus on physical modeling, habitability context, and observational visualization. Do not search for literature or compile the final report.""",
     model=os.environ.get("STARFORGE_ANALYSIS_MODEL", "gemini-3.1-flash-lite"),

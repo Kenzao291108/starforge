@@ -16,7 +16,7 @@ exoplanet_toolset = McpToolset(
             command=sys.executable,
             args=[exoplanet_path],
         ),
-        timeout=30.0,
+        timeout=60.0,
     )
 )
 
@@ -28,7 +28,7 @@ mast_toolset = McpToolset(
             command=sys.executable,
             args=[mast_path],
         ),
-        timeout=30.0,
+        timeout=60.0,
     )
 )
 

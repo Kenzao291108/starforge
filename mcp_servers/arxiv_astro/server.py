@@ -112,6 +112,14 @@ def _parse_arxiv_response(xml_text: str) -> list[dict]:
     return papers
 
 
+import time
+
+# Global variable to store the timestamp of the last request to arXiv API
+# (as per arXiv API guidelines, requests must be spaced by at least 3 seconds)
+_LAST_REQUEST_TIME = 0.0
+_REQUEST_DELAY = 3.0  # seconds
+
+
 def _query_arxiv(
     search_query: str,
     max_results: int = 10,
@@ -137,14 +145,44 @@ def _query_arxiv(
         "sortOrder": sort_order,
     }
 
-    try:
-        logger.info(f"Querying arXiv: {search_query[:80]}...")
-        response = requests.get(ARXIV_API_URL, params=params, timeout=30)
-        response.raise_for_status()
-        return _parse_arxiv_response(response.text)
-    except requests.exceptions.RequestException as e:
-        logger.error(f"arXiv query failed: {e}")
-        return []
+    max_attempts = 3
+    backoff_delay = 2.0
+
+    for attempt in range(1, max_attempts + 1):
+        # Enforce minimum delay since the last request
+        global _LAST_REQUEST_TIME
+        now = time.time()
+        elapsed = now - _LAST_REQUEST_TIME
+        if elapsed < _REQUEST_DELAY:
+            sleep_time = _REQUEST_DELAY - elapsed
+            logger.info(f"Rate limiting: sleeping {sleep_time:.2f}s before querying arXiv...")
+            time.sleep(sleep_time)
+
+        _LAST_REQUEST_TIME = time.time()
+
+        try:
+            logger.info(f"Querying arXiv (attempt {attempt}/{max_attempts}): {search_query[:80]}...")
+            # Use 8s timeout instead of 15s so we don't hang too long on dropped connections
+            response = requests.get(ARXIV_API_URL, params=params, timeout=8)
+            
+            # Explicitly check for rate limits
+            if response.status_code == 429:
+                logger.warning(f"arXiv returned 429 Rate Limited on attempt {attempt}. Backing off for {backoff_delay}s...")
+                time.sleep(backoff_delay)
+                backoff_delay *= 2.0
+                continue
+
+            response.raise_for_status()
+            return _parse_arxiv_response(response.text)
+        except Exception as e:
+            logger.warning(f"arXiv query attempt {attempt} failed: {e}")
+            if attempt < max_attempts:
+                time.sleep(backoff_delay)
+                backoff_delay *= 2.0
+            else:
+                logger.error(f"All {max_attempts} arXiv query attempts failed.")
+                return []
+    return []
 
 
 @mcp.tool()
@@ -250,25 +288,7 @@ def get_paper_abstract(arxiv_id: str) -> str:
 
     authors_str = "\n".join(f"  - {a}" for a in paper["authors"])
 
-    output = f"""## {paper['title']}
-
-### Metadata
-- **arXiv ID:** {paper['arxiv_id']}
-- **Published:** {paper['published']}
-- **Updated:** {paper['updated']}
-- **Categories:** {', '.join(paper['categories'])}
-
-### Authors
-{authors_str}
-
-### Abstract
-{paper['summary']}
-
-### Links
-- **Abstract Page:** {paper.get('abstract_url', paper['id'])}
-- **PDF:** {paper.get('pdf_url', 'N/A')}
-
-"""
+    output = f"## {paper['title']}\n\n### Metadata\n- **arXiv ID:** {paper['arxiv_id']}\n- **Published:** {paper['published']}\n- **Updated:** {paper['updated']}\n- **Categories:** {', '.join(paper['categories'])}\n\n### Authors\n{authors_str}\n\n### Abstract\n{paper['summary']}\n\n### Links\n- **Abstract Page:** {paper.get('abstract_url', paper['id'])}\n- **PDF:** {paper.get('pdf_url', 'N/A')}\n\n"
     if paper.get("journal_ref"):
         output += f"### Journal Reference\n{paper['journal_ref']}\n\n"
 

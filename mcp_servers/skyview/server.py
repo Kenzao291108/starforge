@@ -93,7 +93,7 @@ def _get_skyview_image_url(
             with open(pref_path, "r", encoding="utf-8") as f:
                 prefs = json.load(f)
                 color_lut = prefs.get("skyview_color_lut", "gray")
-                if color_lut and color_lut not in ("gray", "grayscale"):
+                if color_lut and color_lut not in ("gray", "grayscale", "Original/None"):
                     params["lut"] = color_lut
         except Exception as e:
             logger.warning(f"Failed to read preferences for SkyView color lut: {e}")
@@ -108,9 +108,24 @@ def _get_skyview_image_url(
         content_type = response.headers.get("Content-Type", "")
 
         if "image" in content_type:
-            # Direct image response — encode as base64 data URL
-            img_b64 = base64.b64encode(response.content).decode("utf-8")
-            return f"data:image/gif;base64,{img_b64}"
+            # Save direct image response to a local file in ~/.starforge/cache/
+            cache_dir = os.path.expanduser("~/.starforge/cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            # Create a safe filename from target and survey
+            safe_target = "".join([c if c.isalnum() else "_" for c in target])
+            safe_survey = "".join([c if c.isalnum() else "_" for c in survey])
+            filename = f"skyview_{safe_target}_{safe_survey}.gif"
+            filepath = os.path.join(cache_dir, filename)
+            try:
+                with open(filepath, "wb") as f:
+                    f.write(response.content)
+                logger.info(f"Saved direct SkyView image response to local cache: {filepath}")
+                return f"file://{filepath}"
+            except Exception as e:
+                logger.error(f"Failed to save SkyView image to local cache: {e}")
+                # Fallback to base64 only if saving fails
+                img_b64 = base64.b64encode(response.content).decode("utf-8")
+                return f"data:image/gif;base64,{img_b64}"
 
         if "text/html" in content_type:
             # Parse HTML for image URL
@@ -141,162 +156,222 @@ def _get_skyview_image_url(
 
 
 def _query_mast_for_previews(target: str) -> Optional[dict]:
-    """Helper to query MAST for observations of a target with a jpegURL."""
+    """Helper to query MAST for observations of a target with a jpegURL.
+    
+    Uses Mast.Caom.Cone (much faster coordinate lookup) and filters client-side.
+    """
     import requests
     import json
-    
-    search_url = "https://mast.stsci.edu/api/v0/invoke"
-    search_params = {
-        "request": json.dumps({
-            "service": "Mast.Caom.Filtered.Position",
+
+    # Step 1: Resolve target name to coordinates (using GET — faster)
+    ra, dec = None, None
+    try:
+        resolve_response = requests.get(
+            "https://mast.stsci.edu/api/v0/invoke",
+            params={
+                "request": f'{{"service":"Mast.Name.Lookup","params":{{"input":"{target}","format":"json"}}}}'
+            },
+            timeout=10,
+        )
+        resolve_data = resolve_response.json()
+        if resolve_data and "resolvedCoordinate" in resolve_data and resolve_data["resolvedCoordinate"]:
+            coord = resolve_data["resolvedCoordinate"][0]
+            ra = coord.get("ra")
+            dec = coord.get("decl")
+            logger.info(f"MAST resolved '{target}' to RA={ra}, Dec={dec}")
+    except Exception as e:
+        logger.warning(f"MAST name resolution failed for '{target}': {e}")
+
+    # Fallback to Simbad (via astroquery) if MAST name resolution fails
+    if ra is None or dec is None:
+        try:
+            logger.info(f"Attempting Simbad name resolution fallback for '{target}'...")
+            from astroquery.simbad import Simbad
+            simbad_res = Simbad.query_object(target)
+            if simbad_res and len(simbad_res) > 0:
+                ra = float(simbad_res['ra'][0])
+                dec = float(simbad_res['dec'][0])
+                logger.info(f"Simbad resolved '{target}' to RA={ra}, Dec={dec}")
+        except Exception as simbad_err:
+            logger.warning(f"Simbad name resolution fallback failed for '{target}': {simbad_err}")
+
+    # Step 2: Build the search request
+    if ra is not None and dec is not None:
+        # Standard cone search service - extremely fast for coordinates
+        request_obj = {
+            "service": "Mast.Caom.Cone",
+            "format": "json",
+            "pagesize": 150,
+            "page": 1,
+            "params": {
+                "ra": ra,
+                "dec": dec,
+                "radius": 0.03
+            }
+        }
+    else:
+        # Fallback to text-based target_name search using Caom.Filtered
+        filters = [{"paramName": "target_name", "values": [], "freeText": f"%{target}%"}]
+        request_obj = {
+            "service": "Mast.Caom.Filtered",
+            "format": "json",
+            "pagesize": 100,
+            "page": 1,
             "params": {
                 "columns": "*",
-                "filters": [],
-                "position": target,
-                "radius": 0.01,
-                "pagesize": 50,
-                "page": 1,
-                "format": "json"
+                "filters": filters
             }
-        })
-    }
-    
-    try:
-        response = requests.post(
-            search_url,
-            data=search_params,
-            headers={
-                "Content-type": "application/x-www-form-urlencoded",
-                "Accept": "text/plain",
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
-        data = response.json()
-        results = data.get("data", [])
-        if not results:
-            return None
-            
-        # Prioritize JWST, then HST/Hubble, then others
-        preview_obs = None
-        for obs in results:
-            if obs.get("jpegURL"):
-                mission = obs.get("obs_collection", "").upper()
-                if "JWST" in mission:
-                    return obs  # JWST is top priority, return immediately
-                elif "HST" in mission or "HUBBLE" in mission:
-                    if not preview_obs or "JWST" not in preview_obs.get("obs_collection", "").upper():
-                        preview_obs = obs
-                elif not preview_obs:
+        }
+
+    search_params = {"request": json.dumps(request_obj)}
+
+    results = []
+    # Progressive timeouts to give slow MAST queries more time to complete
+    timeouts = [12.0, 16.0, 20.0]
+    max_attempts = len(timeouts)
+    import time
+
+    for attempt in range(1, max_attempts + 1):
+        timeout_val = timeouts[attempt - 1]
+        try:
+            logger.info(f"Querying MAST (attempt {attempt}/{max_attempts}, timeout={timeout_val}s)...")
+            response = requests.post(
+                "https://mast.stsci.edu/api/v0/invoke",
+                data=search_params,
+                headers={
+                    "Content-type": "application/x-www-form-urlencoded",
+                    "Accept": "text/plain",
+                },
+                timeout=timeout_val,
+            )
+            response.raise_for_status()
+            data = response.json()
+            results = data.get("data", [])
+            break  # Success, exit retry loop
+        except Exception as e:
+            logger.warning(f"MAST query attempt {attempt} failed: {e}")
+            if attempt < max_attempts:
+                time.sleep(1.0)
+            else:
+                logger.error(f"All {max_attempts} MAST query attempts failed.")
+                return None
+
+    logger.info(f"MAST returned {len(results)} observations for '{target}'")
+
+    # Pass 1: prefer actual 2D images from JWST > HST/HLA > others
+    preview_obs = None
+    for obs in results:
+        if obs.get("jpegURL") and obs.get("dataproduct_type", "").lower() == "image":
+            mission = obs.get("obs_collection", "").upper()
+            if "JWST" in mission:
+                return obs
+            elif "HST" in mission or "HLA" in mission or "HUBBLE" in mission:
+                if not preview_obs or "JWST" not in preview_obs.get("obs_collection", "").upper():
                     preview_obs = obs
-                    
+            elif not preview_obs:
+                preview_obs = obs
+    if preview_obs:
         return preview_obs
-    except Exception as e:
-        logger.warning(f"MAST query failed in SkyView helper: {e}")
-        return None
+
+    # Pass 2: fall back to any observation with a jpegURL
+    preview_obs = None
+    for obs in results:
+        if obs.get("jpegURL"):
+            mission = obs.get("obs_collection", "").upper()
+            if "JWST" in mission:
+                return obs
+            elif "HST" in mission or "HLA" in mission or "HUBBLE" in mission:
+                if not preview_obs or "JWST" not in preview_obs.get("obs_collection", "").upper():
+                    preview_obs = obs
+            elif not preview_obs:
+                preview_obs = obs
+
+    return preview_obs
 
 
 @mcp.tool()
 def get_sky_image(
     target: str,
-    survey: str = "DSS",
+    survey: str = "",
     size_arcmin: Optional[float] = None,
 ) -> str:
-    """Get a sky image of an astronomical target from a specific survey.
+    """Get a sky image of an astronomical target.
+
+    The survey is determined by the user's saved preferences.
+    Do NOT pass the survey argument — it is read automatically from settings.
 
     Args:
-        target: Target name (e.g., 'TRAPPIST-1', 'M31', 'NGC 1277') or
+        target: Target name (e.g., 'TRAPPIST-1', 'M31', 'NGC 7293') or
                 coordinates (e.g., '23.46 30.66' for RA Dec in degrees).
-        survey: Survey name (default: 'DSS'). Common options:
-                'DSS' (optical), '2MASS-J' (near-IR), 'WISE 3.4' (mid-IR),
-                'GALEX Near UV' (ultraviolet), 'RASS' (X-ray).
-        size_arcmin: Field of view in arcminutes (optional, uses survey default if not specified).
+        survey: IGNORED — always overridden by user preferences. Do not set this.
+        size_arcmin: Field of view in arcminutes (optional).
 
     Returns:
         URL to the sky image and metadata about the observation.
     """
-    # Load default survey and color table preference
+    # ALWAYS read survey from preferences — ignore what the LLM passes
     pref_path = os.path.expanduser("~/.starforge/memory/preferences.json")
-    pref_survey = "DSS"
+    effective_survey = "DSS"
     lut_param = ""
+    pref_size_arcmin = None
     if os.path.exists(pref_path):
         try:
             import json
             with open(pref_path, "r", encoding="utf-8") as f:
                 prefs = json.load(f)
-                pref_survey = prefs.get("default_survey", "DSS")
+                effective_survey = prefs.get("default_survey", "DSS")
                 color_lut = prefs.get("skyview_color_lut", "gray")
-                if color_lut and color_lut not in ("gray", "grayscale"):
+                pref_size_arcmin = prefs.get("skyview_fov_arcmin", None)
+                if color_lut and color_lut not in ("gray", "grayscale", "Original/None"):
                     lut_param = f"&lut={color_lut}"
         except Exception:
             pass
 
-    # Override survey if it is the default DSS but the user preferred a different one
-    if survey == "DSS" and pref_survey != "DSS":
-        survey = pref_survey
+    if size_arcmin is None and pref_size_arcmin is not None:
+        try:
+            size_arcmin = float(pref_size_arcmin)
+        except (ValueError, TypeError):
+            pass
 
-    # Map JWST/HST (MAST) preference to a valid SkyView fallback (DSS)
-    skyview_survey = survey
-    if skyview_survey == "JWST/HST (MAST)":
-        # Prioritize MAST targeted high-resolution preview image
+    logger.info(f"User preferred survey: {effective_survey}")
+
+    # ── MAST path: query real observatory images ──
+    if effective_survey in ("JWST/HST (MAST)", "MAST"):
         preview_obs = _query_mast_for_previews(target)
         if preview_obs and preview_obs.get("jpegURL"):
             obs_collection = preview_obs.get("obs_collection", "Space Telescope")
             inst = preview_obs.get("instrument_name", "Unknown Instrument")
             title = preview_obs.get("obs_title", "High-resolution targeted observation")
-            jpeg_url = preview_obs.get("jpegURL")
-            
-            output = f"""## Sky Image: {target} (High-Resolution View)
+            raw_url = preview_obs.get("jpegURL")
+            # Convert internal mast: URIs to full download URLs
+            if raw_url.startswith("mast:"):
+                jpeg_url = f"https://mast.stsci.edu/api/v0.1/Download/file?uri={raw_url}"
+            else:
+                jpeg_url = raw_url
 
-**Observatory:** {obs_collection}
-**Instrument:** {inst}
-**Description:** {title}
-**Image URL:** {jpeg_url}
-
-### Direct MAST Link
-[View on MAST]({jpeg_url})
-
-*Data source: Mikulski Archive for Space Telescopes (MAST) (https://archive.stsci.edu)*
-"""
+            output = f"## Sky Image: {target} (High-Resolution Observatory View)\n\n**Source:** {obs_collection} — {inst}\n**Description:** {title}\n**Image URL:** {jpeg_url}\n\n### Direct MAST Link\n[View on MAST]({jpeg_url})\n\n*Data source: Mikulski Archive for Space Telescopes (MAST) (https://archive.stsci.edu)*\n"
             return output
-            
-        # Fallback to DSS in SkyView if no MAST preview was found
-        skyview_survey = "DSS"
 
+        # If MAST had no preview, fall back to DSS via SkyView
+        logger.info("No MAST preview found, falling back to SkyView DSS")
+        effective_survey = "DSS"
+
+    # ── SkyView path: fetch from the chosen survey ──
     scale_param = ""
     fov_text = "Default (Survey Native)"
     scale = None
     if size_arcmin is not None:
-        scale = size_arcmin / 60.0  # Convert arcminutes to degrees
+        scale = size_arcmin / 60.0
         scale_param = f"&Pixels=500&Size={scale}"
         fov_text = f"{size_arcmin} arcminutes"
 
-    image_url = _get_skyview_image_url(target, survey=skyview_survey, scale=scale)
-
-    survey_desc = SURVEY_INFO.get(skyview_survey, skyview_survey)
+    image_url = _get_skyview_image_url(target, survey=effective_survey, scale=scale)
+    survey_desc = SURVEY_INFO.get(effective_survey, effective_survey)
 
     if image_url:
-        output = f"""## Sky Image: {target}
-
-**Survey:** {survey} — {survey_desc}
-**Field of View:** {fov_text}
-**Image URL:** {image_url}
-
-### Direct SkyView Link
-[View on SkyView](https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl?Position={target.replace(' ', '+')}&Survey={survey.replace(' ', '+')}&Return=GIF{scale_param}{lut_param}&Projection=Tan)
-
-*Data source: NASA SkyView (https://skyview.gsfc.nasa.gov)*
-"""
+        output = f"## Sky Image: {target}\n\n**Survey:** {effective_survey} — {survey_desc}\n**Field of View:** {fov_text}\n**Image URL:** {image_url}\n\n### Direct SkyView Link\n[View on SkyView](https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl?Position={target.replace(' ', '+')}&Survey={effective_survey.replace(' ', '+')}&Return=GIF{scale_param}{lut_param}&Projection=Tan)\n\n*Data source: NASA SkyView (https://skyview.gsfc.nasa.gov)*\n"
     else:
-        output = f"""## Sky Image: {target}
-
-**Survey:** {survey} — {survey_desc}
-
-⚠️ Could not retrieve image directly. You can view it manually:
-[Open in SkyView](https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl?Position={target.replace(' ', '+')}&Survey={survey.replace(' ', '+')}&Return=GIF{scale_param}{lut_param}&Projection=Tan)
-
-*Data source: NASA SkyView (https://skyview.gsfc.nasa.gov)*
-"""
+        output = f"## Sky Image: {target}\n\n**Survey:** {effective_survey} — {survey_desc}\n\n⚠️ Could not retrieve image directly. You can view it manually:\n[Open in SkyView](https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl?Position={target.replace(' ', '+')}&Survey={effective_survey.replace(' ', '+')}&Return=GIF{scale_param}{lut_param}&Projection=Tan)\n\n*Data source: NASA SkyView (https://skyview.gsfc.nasa.gov)*\n"
     return output
 
 

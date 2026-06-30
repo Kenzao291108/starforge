@@ -73,3 +73,9 @@ coverage.xml
 *.log
 *.bak
 *.tmp
+
+# ==========================================
+# Saved Gradio UI/HTML pages (Local snapshots)
+# ==========================================
+StarForge — Exoplanet Research Assistant.html
+StarForge — Exoplanet Research Assistant_files/
