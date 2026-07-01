@@ -50,7 +50,7 @@ _DATA_URI_RE = re.compile(r'data:image/\w+;base64,[A-Za-z0-9+/=]+')
 _IMAGE_URL_LABEL_RE = re.compile(r'\*\*Image\s*URL:\*\*\s*((?:https?|file)://\S+)')
 
 # Pattern: SkyView temporary image URLs
-_SKYVIEW_URL_RE = re.compile(r'(?:https?|file)://skyview\.gsfc\.nasa\.gov[^\s"\')]\>]+')
+_SKYVIEW_URL_RE = re.compile(r'(?:https?|file)://skyview\.gsfc\.nasa\.gov[^\s"\')>]+')
 
 # Pattern: Markdown image syntax ![alt](url)
 _MD_IMAGE_RE = re.compile(r'!\[.*?\]\(((?:https?|file)://[^\s\)]+)\)')
@@ -59,7 +59,7 @@ _MD_IMAGE_RE = re.compile(r'!\[.*?\]\(((?:https?|file)://[^\s\)]+)\)')
 _GENERIC_IMG_URL_RE = re.compile(r'(?:https?|file)://\S+\.(?:gif|png|jpe?g)', re.IGNORECASE)
 
 # Pattern: MAST (Mikulski Archive) preview image download URLs
-_MAST_URL_RE = re.compile(r'https?://mast\.stsci.edu/api/v\d+\.\d+/Download/file[^\s"\')]\>]+')
+_MAST_URL_RE = re.compile(r'https?://mast\.stsci.edu/api/v\d+\.\d+/Download/file[^\s"\')>]+')
 
 
 def _resolve_to_pil(source: str):
@@ -87,9 +87,32 @@ def _resolve_to_pil(source: str):
 
     if source.startswith("http"):
         try:
+            import hashlib
+            # Use hash of URL to determine local cache path
+            cache_dir = os.path.expanduser("~/.starforge/cache")
+            url_hash = hashlib.md5(source.encode("utf-8")).hexdigest()
+            cached_path = os.path.join(cache_dir, f"cached_{url_hash}.gif")
+            
+            # Check if cached locally first to avoid network requests
+            if os.path.exists(cached_path):
+                try:
+                    return Image.open(cached_path)
+                except Exception:
+                    # If cached image is corrupted, delete it and fallback to download
+                    os.remove(cached_path)
+
             headers = {"User-Agent": "StarForge/1.0 (Research Assistant UI)"}
             resp = requests.get(source, headers=headers, timeout=20)
             resp.raise_for_status()
+            
+            # Save to cache
+            os.makedirs(cache_dir, exist_ok=True)
+            try:
+                with open(cached_path, "wb") as f:
+                    f.write(resp.content)
+            except Exception as cache_err:
+                logger.warning(f"[Image] Failed to write cache file: {cache_err}")
+                
             return Image.open(BytesIO(resp.content))
         except Exception as exc:
             logger.error(f"[Image] Failed to download {source[:120]}: {exc}")
@@ -109,7 +132,64 @@ def _clean_url(url: str) -> str:
             # If there's garbage after the extension and no query parameters are there
             if end_idx < len(url) and "?" not in url[end_idx:]:
                 url = url[:end_idx]
+
+    # Reconstruct and clean SkyView query parameters if any words were glued to the end of them
+    if "skyview.gsfc.nasa.gov" in url.lower() and "?" in url:
+        try:
+            from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+            import re
+            parsed = urlparse(url)
+            qsl = parse_qsl(parsed.query)
+            clean_qsl = []
+            for k, v in qsl:
+                # Chop off any trailing text glued to numeric parameters like Size or Pixels
+                if k.lower() in ("size", "pixels"):
+                    num_match = re.match(r'^([0-9.]+)', v)
+                    if num_match:
+                        v = num_match.group(1)
+                elif k.lower() == "projection":
+                    # Standard projection is Tan. Cut off any trailing alphabetical characters.
+                    for proj in ("tan", "car", "sin", "ait", "zea", "gnom", "orth"):
+                        if v.lower().startswith(proj):
+                            v = v[:len(proj)]
+                            break
+                elif k.lower() == "return":
+                    if v.lower().startswith("gif"):
+                        v = "GIF"
+                    elif v.lower().startswith("fits"):
+                        v = "FITS"
+                clean_qsl.append((k, v))
+            
+            new_query = urlencode(clean_qsl)
+            url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                new_query,
+                parsed.fragment
+            ))
+        except Exception:
+            pass
+
     return url
+
+def _clean_report_text(text: str) -> str:
+    """Find all URLs in the report text, clean them of glued trailing words, and insert spaces/newlines."""
+    import re
+    # Match any URL-like string starting with http://, https://, or file://
+    url_pattern = re.compile(r'((?:https?|file)://\S+)')
+    
+    def repl(match):
+        orig_url = match.group(1)
+        cleaned_url = _clean_url(orig_url)
+        if cleaned_url != orig_url:
+            remainder = orig_url[len(cleaned_url):]
+            # Separate the remainder word with a space
+            return f"{cleaned_url} {remainder}"
+        return orig_url
+
+    return url_pattern.sub(repl, text)
 
 def _extract_image_from_events(events, final_output: str):
     """Search all event data for an image and return a PIL Image or None."""
@@ -362,6 +442,9 @@ def run_research(query, session_id):
             for part in event.content.parts:
                 if part.text:
                     final_output += part.text
+
+    # Clean report text of any query-glued words
+    final_output = _clean_report_text(final_output)
 
     # ── Image extraction (robust multi-strategy) ──
     image_obj = _extract_image_from_events(events, final_output)
@@ -682,6 +765,42 @@ body {
     box-shadow: 0 2px 8px rgba(0, 229, 255, 0.15) !important;
 }
 
+/* ── Fullscreen Fixes for Sky Image ── */
+.sky-image-container:fullscreen,
+.sky-image-container:-webkit-full-screen,
+.sky-image-container:-moz-full-screen,
+.sky-image-container:-ms-fullscreen {
+    height: 100vh !important;
+    max-height: 100vh !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    background-color: #0b0c15 !important;
+    overflow: visible !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+.sky-image-container:fullscreen img,
+.sky-image-container:-webkit-full-screen img,
+.sky-image-container:-moz-full-screen img,
+.sky-image-container:-ms-fullscreen img {
+    height: 100vh !important;
+    width: 100vw !important;
+    object-fit: contain !important;
+}
+
+.sky-image-container:fullscreen .upload-container,
+.sky-image-container:-webkit-full-screen .upload-container,
+.sky-image-container:-moz-full-screen .upload-container,
+.sky-image-container:-ms-fullscreen .upload-container {
+    display: block !important;
+
+    height: 100% !important;
+    width: 100% !important;
+}
+
+
 /* ── Watchlist Section ── */
 .watchlist-section {
     border: 1px solid rgba(156, 39, 176, 0.12) !important;
@@ -839,7 +958,7 @@ with gr.Blocks(title="StarForge — Exoplanet Research Assistant") as app:
             )
             input_fov = gr.Slider(
                 minimum=5,
-                maximum=120,
+                maximum=60,
                 step=1,
                 value=prefs.get("skyview_fov_arcmin", 15),
                 label="Field of View (Arcminutes)",
@@ -978,6 +1097,34 @@ with gr.Blocks(title="StarForge — Exoplanet Research Assistant") as app:
         inputs=[input_detail, input_survey, input_color_lut, input_fov],
         outputs=[output_prefs_status]
     )
+
+import atexit
+
+def cleanup_mcp_toolsets():
+    logger.info("StarForge UI shutting down, closing all MCP connections...")
+    try:
+        from agents.literature_agent import arxiv_toolset
+        logger.info("Closing arXiv toolset connection...")
+        arxiv_toolset.close()
+    except Exception as e:
+        logger.warning(f"Error closing arxiv_toolset: {e}")
+
+    try:
+        from agents.query_agent import exoplanet_toolset, mast_toolset
+        logger.info("Closing exoplanet and MAST toolset connections...")
+        exoplanet_toolset.close()
+        mast_toolset.close()
+    except Exception as e:
+        logger.warning(f"Error closing exoplanet/mast toolset: {e}")
+
+    try:
+        from agents.analysis_agent import skyview_toolset
+        logger.info("Closing SkyView toolset connection...")
+        skyview_toolset.close()
+    except Exception as e:
+        logger.warning(f"Error closing skyview_toolset: {e}")
+
+atexit.register(cleanup_mcp_toolsets)
 
 if __name__ == "__main__":
     app.launch(css=theme_css)
