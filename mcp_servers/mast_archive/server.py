@@ -320,21 +320,30 @@ def get_observation_summary(target: str) -> str:
     if dates:
         date_range = f"MJD {min(dates):.1f} to {max(dates):.1f}"
 
-    # Find any observations with a preview image (prioritize JWST, then HST, then others)
-    # ONLY select from actual 2D images (dataproduct_type == image) to avoid tiny placeholder icons for data cubes.
+    def _get_sort_key(obs_item):
+        try:
+            cl = int(obs_item.get("calib_level", 0) or 0)
+        except (ValueError, TypeError):
+            cl = 0
+        m_name = str(obs_item.get("obs_collection", "")).upper()
+        m_rank = 0
+        if "JWST" in m_name:
+            m_rank = 2
+        elif any(x in m_name for x in ("HST", "HLA", "HUBBLE")):
+            m_rank = 1
+        try:
+            exptime = float(obs_item.get("t_exptime", 0.0) or 0.0)
+        except (ValueError, TypeError):
+            exptime = 0.0
+        return (cl, m_rank, exptime)
+
+    results_sorted = sorted(results, key=_get_sort_key, reverse=True)
+
     preview_obs = None
-    for obs in results:
+    for obs in results_sorted:
         if obs.get("jpegURL") and obs.get("dataproduct_type", "").lower() == "image":
-            mission = obs.get("obs_collection", "").upper()
-            if "JWST" in mission:
-                preview_obs = obs
-                break  # JWST is top priority, stop immediately
-            elif "HST" in mission or "HUBBLE" in mission:
-                # Keep first HST/Hubble preview found, but continue looking for JWST
-                if not preview_obs or "JWST" not in preview_obs.get("obs_collection", "").upper():
-                    preview_obs = obs
-            elif not preview_obs:
-                preview_obs = obs
+            preview_obs = obs
+            break
 
     preview_section = ""
     if preview_obs:
