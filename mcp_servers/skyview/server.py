@@ -108,24 +108,23 @@ def _get_skyview_image_url(
         content_type = response.headers.get("Content-Type", "")
 
         if "image" in content_type:
-            # Save direct image response to a local file in ~/.starforge/cache/
+            # We want to return the actual public URL (response.url) to the LLM so it is a valid
+            # clickable web link, but pre-populate the UI's local cache so it loads instantly.
+            import hashlib
             cache_dir = os.path.expanduser("~/.starforge/cache")
             os.makedirs(cache_dir, exist_ok=True)
-            # Create a safe filename from target and survey
-            safe_target = "".join([c if c.isalnum() else "_" for c in target])
-            safe_survey = "".join([c if c.isalnum() else "_" for c in survey])
-            filename = f"skyview_{safe_target}_{safe_survey}.gif"
-            filepath = os.path.join(cache_dir, filename)
+            
+            public_url = response.url
+            url_hash = hashlib.md5(public_url.encode("utf-8")).hexdigest()
+            cached_path = os.path.join(cache_dir, f"cached_{url_hash}.gif")
             try:
-                with open(filepath, "wb") as f:
+                with open(cached_path, "wb") as f:
                     f.write(response.content)
-                logger.info(f"Saved direct SkyView image response to local cache: {filepath}")
-                return f"file://{filepath}"
+                logger.info(f"Saved direct SkyView image response to pre-warmed cache: {cached_path}")
             except Exception as e:
-                logger.error(f"Failed to save SkyView image to local cache: {e}")
-                # Fallback to base64 only if saving fails
-                img_b64 = base64.b64encode(response.content).decode("utf-8")
-                return f"data:image/gif;base64,{img_b64}"
+                logger.error(f"Failed to pre-warm SkyView image cache: {e}")
+            
+            return public_url
 
         if "text/html" in content_type:
             # Parse HTML for image URL
@@ -258,35 +257,36 @@ def _query_mast_for_previews(target: str) -> Optional[dict]:
 
     logger.info(f"MAST returned {len(results)} observations for '{target}'")
 
-    # Pass 1: prefer actual 2D images from JWST > HST/HLA > others
-    preview_obs = None
-    for obs in results:
+    def _get_sort_key(obs_item):
+        try:
+            cl = int(obs_item.get("calib_level", 0) or 0)
+        except (ValueError, TypeError):
+            cl = 0
+        m_name = str(obs_item.get("obs_collection", "")).upper()
+        m_rank = 0
+        if "JWST" in m_name:
+            m_rank = 2
+        elif any(x in m_name for x in ("HST", "HLA", "HUBBLE")):
+            m_rank = 1
+        try:
+            exptime = float(obs_item.get("t_exptime", 0.0) or 0.0)
+        except (ValueError, TypeError):
+            exptime = 0.0
+        return (cl, m_rank, exptime)
+
+    results_sorted = sorted(results, key=_get_sort_key, reverse=True)
+
+    # Pass 1: prefer actual 2D images
+    for obs in results_sorted:
         if obs.get("jpegURL") and obs.get("dataproduct_type", "").lower() == "image":
-            mission = obs.get("obs_collection", "").upper()
-            if "JWST" in mission:
-                return obs
-            elif "HST" in mission or "HLA" in mission or "HUBBLE" in mission:
-                if not preview_obs or "JWST" not in preview_obs.get("obs_collection", "").upper():
-                    preview_obs = obs
-            elif not preview_obs:
-                preview_obs = obs
-    if preview_obs:
-        return preview_obs
+            return obs
 
     # Pass 2: fall back to any observation with a jpegURL
-    preview_obs = None
-    for obs in results:
+    for obs in results_sorted:
         if obs.get("jpegURL"):
-            mission = obs.get("obs_collection", "").upper()
-            if "JWST" in mission:
-                return obs
-            elif "HST" in mission or "HLA" in mission or "HUBBLE" in mission:
-                if not preview_obs or "JWST" not in preview_obs.get("obs_collection", "").upper():
-                    preview_obs = obs
-            elif not preview_obs:
-                preview_obs = obs
+            return obs
 
-    return preview_obs
+    return None
 
 
 @mcp.tool()
@@ -333,6 +333,9 @@ def get_sky_image(
         except (ValueError, TypeError):
             pass
 
+    if size_arcmin is not None and size_arcmin > 60.0:
+        size_arcmin = 60.0
+
     logger.info(f"User preferred survey: {effective_survey}")
 
     # ── MAST path: query real observatory images ──
@@ -362,7 +365,7 @@ def get_sky_image(
     scale = None
     if size_arcmin is not None:
         scale = size_arcmin / 60.0
-        scale_param = f"&Pixels=500&Size={scale}"
+        scale_param = "&Pixels=500&Size=1" if scale == 1.0 else f"&Pixels=500&Size={scale:.4f}"
         fov_text = f"{size_arcmin} arcminutes"
 
     image_url = _get_skyview_image_url(target, survey=effective_survey, scale=scale)
@@ -392,6 +395,8 @@ def get_multi_wavelength(
     Returns:
         URLs to sky images from multiple surveys spanning the electromagnetic spectrum.
     """
+    if size_arcmin > 60.0:
+        size_arcmin = 60.0
     scale = size_arcmin / 60.0
 
     # Select representative surveys across the spectrum
