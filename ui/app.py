@@ -372,7 +372,7 @@ def format_history_html(history):
 # Core research function
 # ---------------------------------------------------------------------------
 
-def run_research(query, session_id):
+async def run_research(query, session_id):
     if not query.strip():
         return "Please enter a search query.", None, gr.update(), gr.update(), ""
 
@@ -411,7 +411,7 @@ def run_research(query, session_id):
     for attempt in range(max_retries + 1):
         try:
             events = []
-            for event in runner.run(user_id=user_id, session_id=session_id, new_message=new_message):
+            async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=new_message):
                 events.append(event)
             break  # Success, exit retry loop
         except Exception as e:
@@ -424,12 +424,12 @@ def run_research(query, session_id):
                 )
             )
             if is_transient and attempt < max_retries:
-                import time
+                import asyncio
                 logger.warning(
                     f"Transient or network error (attempt {attempt + 1}/{max_retries + 1}): {err_msg}. "
                     f"Retrying in {retry_delay}s..."
                 )
-                time.sleep(retry_delay)
+                await asyncio.sleep(retry_delay)
                 retry_delay *= 2.0  # Exponential backoff
             else:
                 logger.error(f"Agent execution failed after {attempt + 1} attempts: {err_msg}")
@@ -459,6 +459,12 @@ def run_research(query, session_id):
         words = query.split()
         if words:
             target_name = words[-1]
+
+    # Clean up runner explicitly to prevent ADK stdio session resource leaks
+    try:
+        await runner.close()
+    except Exception as e:
+        logger.warning(f"Error closing runner: {e}")
 
     # Save to history
     memory_manager.add_to_history(query=query, brief=final_output, target_name=target_name)
@@ -769,13 +775,14 @@ body {
 .sky-image-container:fullscreen,
 .sky-image-container:-webkit-full-screen,
 .sky-image-container:-moz-full-screen,
-.sky-image-container:-ms-fullscreen {
-    height: 100vh !important;
-    max-height: 100vh !important;
-    width: 100vw !important;
-    max-width: 100vw !important;
+.sky-image-container:-ms-fullscreen,
+.sky-image-container *:fullscreen,
+.sky-image-container *:-webkit-full-screen {
+    height: 100% !important;
+    max-height: 100% !important;
+    width: 100% !important;
+    max-width: 100% !important;
     background-color: #0b0c15 !important;
-    overflow: visible !important;
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
@@ -784,18 +791,21 @@ body {
 .sky-image-container:fullscreen img,
 .sky-image-container:-webkit-full-screen img,
 .sky-image-container:-moz-full-screen img,
-.sky-image-container:-ms-fullscreen img {
-    height: 100vh !important;
-    width: 100vw !important;
+.sky-image-container:-ms-fullscreen img,
+.sky-image-container *:fullscreen img,
+.sky-image-container *:-webkit-full-screen img {
+    height: 100% !important;
+    width: 100% !important;
     object-fit: contain !important;
 }
 
 .sky-image-container:fullscreen .upload-container,
 .sky-image-container:-webkit-full-screen .upload-container,
 .sky-image-container:-moz-full-screen .upload-container,
-.sky-image-container:-ms-fullscreen .upload-container {
+.sky-image-container:-ms-fullscreen .upload-container,
+.sky-image-container *:fullscreen .upload-container,
+.sky-image-container *:-webkit-full-screen .upload-container {
     display: block !important;
-
     height: 100% !important;
     width: 100% !important;
 }
@@ -1011,7 +1021,11 @@ with gr.Blocks(title="StarForge — Exoplanet Research Assistant") as app:
             output_report = gr.Markdown(
                 label="Research Brief",
                 value="Enter a target system above to generate a comprehensive exoplanet research profile.",
-                elem_classes="report-output"
+                elem_classes="report-output",
+                latex_delimiters=[
+                    {"left": "$$", "right": "$$", "display": True},
+                    {"left": "$", "right": "$", "display": False}
+                ]
             )
 
         # Right: Sky Image + Watchlist
@@ -1102,27 +1116,35 @@ import atexit
 
 def cleanup_mcp_toolsets():
     logger.info("StarForge UI shutting down, closing all MCP connections...")
-    try:
-        from agents.literature_agent import arxiv_toolset
-        logger.info("Closing arXiv toolset connection...")
-        arxiv_toolset.close()
-    except Exception as e:
-        logger.warning(f"Error closing arxiv_toolset: {e}")
+    import asyncio
+    
+    async def do_cleanup():
+        try:
+            from agents.literature_agent import arxiv_toolset
+            logger.info("Closing arXiv toolset connection...")
+            await arxiv_toolset.close()
+        except Exception as e:
+            logger.warning(f"Error closing arxiv_toolset: {e}")
 
-    try:
-        from agents.query_agent import exoplanet_toolset, mast_toolset
-        logger.info("Closing exoplanet and MAST toolset connections...")
-        exoplanet_toolset.close()
-        mast_toolset.close()
-    except Exception as e:
-        logger.warning(f"Error closing exoplanet/mast toolset: {e}")
+        try:
+            from agents.query_agent import exoplanet_toolset, mast_toolset
+            logger.info("Closing exoplanet and MAST toolset connections...")
+            await exoplanet_toolset.close()
+            await mast_toolset.close()
+        except Exception as e:
+            logger.warning(f"Error closing exoplanet/mast toolset: {e}")
 
+        try:
+            from agents.analysis_agent import skyview_toolset
+            logger.info("Closing SkyView toolset connection...")
+            await skyview_toolset.close()
+        except Exception as e:
+            logger.warning(f"Error closing skyview_toolset: {e}")
+            
     try:
-        from agents.analysis_agent import skyview_toolset
-        logger.info("Closing SkyView toolset connection...")
-        skyview_toolset.close()
+        asyncio.run(do_cleanup())
     except Exception as e:
-        logger.warning(f"Error closing skyview_toolset: {e}")
+        logger.warning(f"Error during async cleanup: {e}")
 
 atexit.register(cleanup_mcp_toolsets)
 
