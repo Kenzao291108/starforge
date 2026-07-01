@@ -41,7 +41,7 @@ Follow these steps:
    - NEVER invent, guess, or hallucinate image URLs.
    - NEVER use Wikipedia or Wikimedia URLs.
    - ONLY use the exact URL returned by the `get_sky_image` tool.
-   - Place the **Image URL:** on its own line with a blank line after it.
+    - Place the **Image URL:** on its own line with a blank line after it. Ensure there is a blank space and a newline immediately after the URL, and NEVER glue any descriptive text directly to the URL.
 
 Focus on physical modeling, habitability context, and observational visualization. Do not search for literature or compile the final report.""",
     model=os.environ.get("STARFORGE_ANALYSIS_MODEL", "gemini-3.1-flash-lite"),
