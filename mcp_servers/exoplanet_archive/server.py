@@ -32,6 +32,16 @@ mcp = FastMCP(
     instructions="Query the NASA Exoplanet Archive for exoplanet and stellar data",
 )
 
+# Persistent session to reuse connection sockets and prevent SSL EOF errors
+_session = None
+
+def _get_session():
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update({"User-Agent": "StarForge/1.0 (Exoplanet Research Assistant)"})
+    return _session
+
 
 def _execute_tap_query(query: str, max_rows: int = 50) -> list[dict]:
     """Execute an ADQL query against the NASA Exoplanet Archive TAP service.
@@ -56,7 +66,8 @@ def _execute_tap_query(query: str, max_rows: int = 50) -> list[dict]:
     for attempt in range(max_retries):
         try:
             logger.info(f"Executing TAP query (attempt {attempt + 1}/{max_retries}): {query[:100]}...")
-            response = requests.post(TAP_BASE_URL, data=data, headers={"Connection": "close"}, timeout=30)
+            session = _get_session()
+            response = session.post(TAP_BASE_URL, data=data, timeout=30)
             response.raise_for_status()
             result = response.json()
 

@@ -26,7 +26,17 @@ logging.basicConfig(
 logger = logging.getLogger("arxiv_astro_mcp")
 
 # arXiv API endpoint
-ARXIV_API_URL = "http://export.arxiv.org/api/query"
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
+
+# Shared session for connection reuse
+_session = None
+
+def _get_session():
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update({"User-Agent": "StarForge/1.0 (ArXiv Astro MCP Server)"})
+    return _session
 
 # Astronomy arXiv categories
 ASTRO_CATEGORIES = {
@@ -117,7 +127,7 @@ import time
 # Global variable to store the timestamp of the last request to arXiv API
 # (as per arXiv API guidelines, requests must be spaced by at least 3 seconds)
 _LAST_REQUEST_TIME = 0.0
-_REQUEST_DELAY = 3.0  # seconds
+_REQUEST_DELAY = 6.0  # seconds
 
 
 def _query_arxiv(
@@ -146,7 +156,7 @@ def _query_arxiv(
     }
 
     max_attempts = 3
-    backoff_delay = 2.0
+    backoff_delay = 5.0
 
     for attempt in range(1, max_attempts + 1):
         # Enforce minimum delay since the last request
@@ -160,10 +170,16 @@ def _query_arxiv(
 
         _LAST_REQUEST_TIME = time.time()
 
+        api_urls = [
+            "https://export.arxiv.org/api/query",
+            "https://de.arxiv.org/api/query",
+            "https://uk.arxiv.org/api/query"
+        ]
+        url = api_urls[(attempt - 1) % len(api_urls)]
         try:
-            logger.info(f"Querying arXiv (attempt {attempt}/{max_attempts}): {search_query[:80]}...")
-            # Use 8s timeout instead of 15s so we don't hang too long on dropped connections
-            response = requests.get(ARXIV_API_URL, params=params, timeout=8)
+            logger.info(f"Querying arXiv mirror {url} (attempt {attempt}/{max_attempts}): {search_query[:80]}...")
+            headers = {"User-Agent": "StarForge/1.0 (ArXiv Astro MCP Server)"}
+            response = requests.get(url, params=params, headers=headers, timeout=45)
             
             # Explicitly check for rate limits
             if response.status_code == 429:
