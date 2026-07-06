@@ -1,3 +1,17 @@
+---
+title: StarForge Agent
+emoji: 🔥
+colorFrom: red
+colorTo: blue
+sdk: gradio
+sdk_version: 6.19.0
+python_version: '3.13'
+app_file: app.py
+pinned: false
+license: apache-2.0
+short_description: StarForge is an autonomous exoplanet research
+---
+
 # 🔭 StarForge — AI-Powered Multi-Agent Exoplanet Research Assistant
 
 [![Track: Agents for Good](https://img.shields.io/badge/Track-Agents_for_Good-purple.svg)](#)
