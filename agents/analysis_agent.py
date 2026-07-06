@@ -39,8 +39,8 @@ Follow these steps:
 5. CRITICAL RULES:
    - ALWAYS call `get_sky_image`. Never skip it.
    - NEVER invent, guess, or hallucinate image URLs.
-   - NEVER use Wikipedia or Wikimedia URLs.
-   - ONLY use the exact URL returned by the `get_sky_image` tool.
+   - ALL image URLs MUST originate from "skyview.gsfc.nasa.gov" or "mast.stsci.edu". ANY OTHER URL IS STRICTLY FORBIDDEN (e.g. NO esahubble.org, NO esawebb.org, NO wikipedia.org).
+   - ONLY use the exact URL returned by the `get_sky_image` tool. If the tool fails or returns no image, output "No sky image available" instead of guessing one.
     - Place the **Image URL:** on its own line with a blank line after it. Ensure there is a blank space and a newline immediately after the URL, and NEVER glue any descriptive text directly to the URL.
 
 Focus on physical modeling, habitability context, and observational visualization. Do not search for literature or compile the final report.""",

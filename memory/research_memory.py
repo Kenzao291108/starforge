@@ -54,7 +54,15 @@ class ResearchMemoryManager:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            import shutil
+            import logging
+            backup_path = file_path + ".corrupted.bak"
+            try:
+                shutil.copy2(file_path, backup_path)
+                logging.getLogger("starforge_ui").error(f"Failed to load {file_path}, corrupted JSON backed up to {backup_path}. Error: {e}")
+            except Exception as backup_e:
+                logging.getLogger("starforge_ui").error(f"Failed to backup corrupted JSON {file_path}. Error: {backup_e}")
             return default
 
     def _save_json(self, file_path: str, data: Any) -> None:
@@ -82,6 +90,15 @@ class ResearchMemoryManager:
     def get_history(self) -> List[Dict[str, Any]]:
         """Retrieve the exoplanet research history log."""
         return self.history
+
+    def remove_from_history(self, timestamp: str) -> bool:
+        """Remove a research history item by its timestamp."""
+        initial_len = len(self.history)
+        self.history = [entry for entry in self.history if entry.get("timestamp") != timestamp]
+        if len(self.history) < initial_len:
+            self._save_json(self.history_file, self.history)
+            return True
+        return False
 
     def add_to_watchlist(self, target_name: str, notes: str = "", parameters: Optional[Dict[str, Any]] = None) -> None:
         """Add a planet or stellar system to the tracking watchlist."""

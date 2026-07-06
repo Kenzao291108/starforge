@@ -103,7 +103,7 @@ def _mast_filtered_query(
     import json
     search_url = "https://mast.stsci.edu/api/v0/invoke"
     
-    filters = []
+    filters = [{"paramName": "dataRights", "values": ["PUBLIC"]}]
     if mission:
         filters.append({"paramName": "obs_collection", "values": [mission]})
 

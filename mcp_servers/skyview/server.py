@@ -333,8 +333,8 @@ def get_sky_image(
         except (ValueError, TypeError):
             pass
 
-    if size_arcmin is not None and size_arcmin > 60.0:
-        size_arcmin = 60.0
+    if size_arcmin is not None and size_arcmin > 300.0:
+        size_arcmin = 300.0
 
     logger.info(f"User preferred survey: {effective_survey}")
 
@@ -365,10 +365,10 @@ def get_sky_image(
     scale = None
     if size_arcmin is not None:
         scale = size_arcmin / 60.0
-        scale_param = "&Pixels=500&Size=1" if scale == 1.0 else f"&Pixels=500&Size={scale:.4f}"
+        scale_param = "&Pixels=1200&Size=1" if scale == 1.0 else f"&Pixels=1200&Size={scale:.4f}"
         fov_text = f"{size_arcmin} arcminutes"
 
-    image_url = _get_skyview_image_url(target, survey=effective_survey, scale=scale)
+    image_url = _get_skyview_image_url(target, survey=effective_survey, scale=scale, pixels=1200)
     survey_desc = SURVEY_INFO.get(effective_survey, effective_survey)
 
     if image_url:
@@ -395,8 +395,8 @@ def get_multi_wavelength(
     Returns:
         URLs to sky images from multiple surveys spanning the electromagnetic spectrum.
     """
-    if size_arcmin > 60.0:
-        size_arcmin = 60.0
+    if size_arcmin > 300.0:
+        size_arcmin = 300.0
     scale = size_arcmin / 60.0
 
     # Select representative surveys across the spectrum
@@ -414,12 +414,12 @@ def get_multi_wavelength(
     ]
 
     for survey_name, label in surveys:
-        image_url = _get_skyview_image_url(target, survey=survey_name, scale=scale)
+        image_url = _get_skyview_image_url(target, survey=survey_name, scale=scale, pixels=1200)
 
         skyview_link = (
             f"https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl?"
             f"Position={target.replace(' ', '+')}&Survey={survey_name.replace(' ', '+')}"
-            f"&Return=GIF&Pixels=400&Size={scale}&Projection=Tan"
+            f"&Return=GIF&Pixels=1200&Size={scale}&Projection=Tan"
         )
 
         if image_url:

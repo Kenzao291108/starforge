@@ -71,6 +71,16 @@ StarForge builds and deploys 4 custom MCP servers that expose real-time astronom
 
 ---
 
+## 🛡️ Security & Architecture
+
+StarForge includes several built-in protections for production deployments:
+- **XSS Mitigation:** All user-controlled inputs (queries, watchlist targets, history notes) are strictly sanitized and escaped before UI rendering.
+- **Secure File Access:** Strict path validation prevents unauthorized local file access via LLM manipulation.
+- **Semantic CSS:** Separation of concerns between UI logic and styling, using fully customizable semantic classes for dark/light themes.
+- **Data Resilience:** Enhanced JSON persistence layer safely backs up corrupted files to prevent catastrophic data loss during state updates.
+
+---
+
 ## 🚀 Setup & Installation
 
 ### 1. Prerequisites

@@ -4,6 +4,7 @@ import sys
 import json
 import uuid
 import base64
+import html
 import logging
 import tempfile
 from io import BytesIO
@@ -30,6 +31,78 @@ from memory.research_memory import ResearchMemoryManager
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("starforge_ui")
+
+js_script = """
+<script>
+(function() {
+    function syncBg() {
+        const skyImgContainers = document.querySelectorAll('.sky-image-container');
+        skyImgContainers.forEach(container => {
+            const img = container.querySelector('img');
+            const frame = container.querySelector('.image-frame') || container.querySelector('.image-container');
+            if (img && frame) {
+                const src = img.src;
+                if (frame.style.backgroundImage !== `url("${src}")`) {
+                    frame.style.backgroundImage = `url("${src}")`;
+                }
+            }
+        });
+    }
+
+    const observer = new MutationObserver(() => {
+        syncBg();
+    });
+
+    const interval = setInterval(() => {
+        if (document.body) {
+            clearInterval(interval);
+            observer.observe(document.body, { childList: true, subtree: true });
+            syncBg();
+        }
+    }, 100);
+})();
+
+window.deleteHistoryItem = function(timestamp, event) {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    const btn = event ? event.target.closest('.delete-history-btn') : null;
+    const historyItem = btn ? btn.closest('.history-item') : null;
+    if (historyItem) {
+        historyItem.style.transition = 'all 0.4s ease';
+        historyItem.style.opacity = '0';
+        historyItem.style.transform = 'translateX(20px)';
+        setTimeout(() => { historyItem.remove(); }, 400);
+    }
+    window.tempHistoryDeleteVal = timestamp;
+    const gradioBtn = document.querySelector('#btn-delete-history');
+    if (gradioBtn) {
+        setTimeout(() => { gradioBtn.click(); }, 50);
+    }
+};
+
+window.deleteWatchlistItem = function(targetName, event) {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    const btn = event ? event.target.closest('.delete-watchlist-btn') : null;
+    const watchlistCard = btn ? btn.closest('.watchlist-card') : null;
+    if (watchlistCard) {
+        watchlistCard.style.transition = 'all 0.4s ease';
+        watchlistCard.style.opacity = '0';
+        watchlistCard.style.transform = 'translateX(20px)';
+        setTimeout(() => { watchlistCard.remove(); }, 400);
+    }
+    window.tempWatchlistDeleteVal = targetName;
+    const gradioBtn = document.querySelector('#btn-delete-watchlist');
+    if (gradioBtn) {
+        setTimeout(() => { gradioBtn.click(); }, 50);
+    }
+};
+</script>
+"""
 
 # Initialize directories
 STORAGE_DIR = os.path.expanduser("~/.starforge")
@@ -76,10 +149,20 @@ def _resolve_to_pil(source: str):
         try:
             # Extract absolute path
             path = source[7:]
-            if os.path.exists(path):
-                return Image.open(path)
+            # SECURITY: restrict file paths to ~/.starforge or workspace
+            allowed_dirs = [
+                os.path.abspath(os.path.expanduser("~/.starforge")),
+                os.path.abspath(BASE_DIR)
+            ]
+            abs_path = os.path.abspath(path)
+            if not any(abs_path.startswith(d) for d in allowed_dirs):
+                logger.error(f"[Image] Security violation: Attempted to load unauthorized local file {path}")
+                return None
+            
+            if os.path.exists(abs_path):
+                return Image.open(abs_path)
             else:
-                logger.error(f"[Image] Local file not found: {path}")
+                logger.error(f"[Image] Local file not found: {abs_path}")
                 return None
         except Exception as exc:
             logger.error(f"[Image] Failed to load local file {source}: {exc}")
@@ -288,84 +371,82 @@ def format_watchlist_html(watchlist):
     """Render watchlist as premium glassmorphism cards."""
     if not watchlist:
         return """
-        <div style="text-align: center; padding: 28px 16px; color: #6b7094;">
-            <div style="font-size: 2em; margin-bottom: 8px; opacity: 0.5;">⭐</div>
-            <div style="font-size: 0.9em;">No systems in watchlist yet.</div>
-            <div style="font-size: 0.78em; color: #4a4f6e; margin-top: 4px;">Analyze a target and add it here to track.</div>
+        <div class="watchlist-empty">
+            <div class="watchlist-empty-icon">⭐</div>
+            <div class="watchlist-empty-title">No systems in watchlist yet.</div>
+            <div class="watchlist-empty-subtitle">Analyze a target and add it here to track.</div>
         </div>"""
 
-    html = "<div style='display: flex; flex-direction: column; gap: 8px;'>"
+    html_str = "<div class='watchlist-list'>"
     for idx, item in enumerate(watchlist):
         notes_html = ""
         if item.get("notes"):
-            notes_html = f"<div style='font-size: 0.82em; color: #9ca3c4; margin-top: 6px; line-height: 1.4;'>{item['notes'][:80]}</div>"
+            safe_notes = html.escape(item['notes'][:80])
+            notes_html = f"<div class='watchlist-notes'>{safe_notes}</div>"
 
-        html += f"""
-        <div class="watchlist-card" style="
-            background: linear-gradient(135deg, rgba(156, 39, 176, 0.08), rgba(0, 229, 255, 0.05));
-            border: 1px solid rgba(156, 39, 176, 0.2);
-            border-radius: 10px;
-            padding: 12px 14px;
-            transition: all 0.25s ease;
-            position: relative;
-        ">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 1.1em;">🪐</span>
-                    <span style="color: #e040fb; font-weight: 600; font-size: 0.95em;">{item['target_name']}</span>
+        safe_target = html.escape(item['target_name'])
+        safe_target_js = item['target_name'].replace(chr(39), "")
+        safe_timestamp = html.escape(item['timestamp'][:10])
+
+        html_str += f"""
+        <div class="watchlist-card">
+            <div class="watchlist-card-header">
+                <div class="watchlist-item-content">
+                    <span class="watchlist-icon">🪐</span>
+                    <span class="watchlist-target-name">{safe_target}</span>
                 </div>
-                <span style="
-                    font-size: 0.7em;
-                    color: #5a5f80;
-                    background: rgba(255,255,255,0.04);
-                    padding: 2px 8px;
-                    border-radius: 10px;
-                ">{item['timestamp'][:10]}</span>
+                <div class="watchlist-actions">
+                    <span class="watchlist-timestamp">{safe_timestamp}</span>
+                    <button class="delete-watchlist-btn" onclick="deleteWatchlistItem('{safe_target_js}', event)">( - )</button>
+                </div>
             </div>
             {notes_html}
         </div>"""
 
-    html += "</div>"
-    return html
+    html_str += "</div>"
+    return html_str
 
 
 def format_history_html(history):
     """Render history as compact clickable items for the sidebar."""
     if not history:
         return """
-        <div style="text-align: center; padding: 24px 12px; color: #5a5f80;">
-            <div style="font-size: 1.5em; margin-bottom: 6px; opacity: 0.4;">🔭</div>
-            <div style="font-size: 0.82em;">No research yet.</div>
-            <div style="font-size: 0.75em; color: #3e4260; margin-top: 4px;">Start by analyzing a target system.</div>
+        <div class="history-empty">
+            <div class="history-empty-icon">🔭</div>
+            <div class="history-empty-title">No research yet.</div>
+            <div class="history-empty-subtitle">Start by analyzing a target system.</div>
         </div>"""
 
-    html = "<div style='display: flex; flex-direction: column; gap: 4px;'>"
+    html_str = "<div class='history-list'>"
     for idx, item in enumerate(history):
         target_disp = item.get('target_name') or item.get('query', 'Unknown')
         query_snippet = item.get('query', '')[:45]
         date_str = item.get('timestamp', '')[:10]
+        
+        safe_target_disp = html.escape(target_disp)
+        safe_query_snippet = html.escape(query_snippet)
+        safe_date_str = html.escape(date_str)
+        
+        js_query_snippet = query_snippet.replace(chr(39), "").replace(chr(10), "").replace(chr(13), "")
 
-        html += f"""
-        <div class="history-item" style="
-            padding: 10px 12px;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            border-left: 2px solid transparent;
-        " onclick="
-            document.querySelector('#search-input textarea').value = '{query_snippet.replace(chr(39), "").replace(chr(10), "")}';
+        html_str += f"""
+        <div class="history-item" onclick="
+            document.querySelector('#search-input textarea').value = '{js_query_snippet}';
             document.querySelector('#search-input textarea').dispatchEvent(new Event('input', {{bubbles: true}}));
         ">
-            <div style="display: flex; align-items: center; gap: 6px;">
-                <span style="color: #7c8aff; font-size: 0.75em;">●</span>
-                <span style="color: #c8cdf5; font-weight: 500; font-size: 0.88em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px;">{target_disp}</span>
+            <div class="history-item-header">
+                <div class="history-item-content">
+                    <span class="history-bullet">●</span>
+                    <span class="history-target-name">{safe_target_disp}</span>
+                </div>
+                <button class="delete-history-btn" onclick="deleteHistoryItem('{item.get('timestamp')}', event)">( - )</button>
             </div>
-            <div style="font-size: 0.75em; color: #5a5f80; margin-top: 3px; padding-left: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{query_snippet}…</div>
-            <div style="font-size: 0.68em; color: #3e4260; margin-top: 2px; padding-left: 14px;">{date_str}</div>
+            <div class="history-query">{safe_query_snippet}…</div>
+            <div class="history-date">{safe_date_str}</div>
         </div>"""
 
-    html += "</div>"
-    return html
+    html_str += "</div>"
+    return html_str
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +501,8 @@ async def run_research(query, session_id):
                 err in err_msg.lower()
                 for err in (
                     "503", "unavailable", "429", "resource_exhausted", "limit",
-                    "connect", "connection", "timeout", "name resolution", "dns"
+                    "connect", "connection", "timeout", "name resolution", "dns",
+                    "getaddrinfo", "11001", "socket", "network"
                 )
             )
             if is_transient and attempt < max_retries:
@@ -515,399 +597,73 @@ def save_preferences(detail_level, default_survey, skyview_color_lut, skyview_fo
 # ---------------------------------------------------------------------------
 # Premium CSS Theme
 # ---------------------------------------------------------------------------
-theme_css = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800;900&display=swap');
+import os
+import base64
 
-/* ── Global ── */
-body {
-    background-color: #08091a !important;
-}
+# Load CSS themes
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(base_dir, "ui", "dark_theme.css"), "r", encoding="utf-8") as f:
+    dark_css = f.read()
+    
+with open(os.path.join(base_dir, "ui", "light_theme.css"), "r", encoding="utf-8") as f:
+    light_css = f.read()
 
-.gradio-container {
-    background: radial-gradient(ellipse at 20% 0%, #161233 0%, #0c0f1d 40%, #08091a 100%) !important;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
-    max-width: 100% !important;
-}
 
-/* ── Sidebar ── */
-.sidebar {
-    background: linear-gradient(180deg, #0e1029 0%, #0a0c1e 100%) !important;
-    border-right: 1px solid rgba(124, 138, 255, 0.1) !important;
-    font-family: 'Inter', sans-serif !important;
-}
-
-.sidebar .label-wrap {
+theme_css = dark_css + "\n" + light_css + """
+/* Remove Gradio's default gray background on form containers, but preserve our custom panels */
+body.dark .gr-form:not(.glass-panel):not(.watchlist-section),
+body.dark .gr-group:not(.glass-panel):not(.watchlist-section),
+body.dark .gr-box:not(.glass-panel):not(.watchlist-section),
+body:not(.dark) .gr-form:not(.glass-panel):not(.watchlist-section),
+body:not(.dark) .gr-group:not(.glass-panel):not(.watchlist-section),
+body:not(.dark) .gr-box:not(.glass-panel):not(.watchlist-section) {
+    background-color: transparent !important;
     background: transparent !important;
-}
-
-.sidebar-brand {
-    text-align: center;
-    padding: 8px 16px 16px;
-    border-bottom: 1px solid rgba(124, 138, 255, 0.08);
-    margin-bottom: 12px;
-}
-
-.sidebar-brand h2 {
-    background: linear-gradient(135deg, #e040fb 0%, #7c8aff 50%, #00e5ff 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    font-family: 'Outfit', sans-serif;
-    font-weight: 800;
-    font-size: 1.4em;
-    margin: 0;
-    letter-spacing: -0.02em;
-}
-
-.sidebar-section-label {
-    font-size: 0.68em;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: #4a4f6e;
-    padding: 4px 16px;
-    font-weight: 600;
-}
-
-/* History items hover */
-.history-item:hover {
-    background: rgba(124, 138, 255, 0.08) !important;
-    border-left-color: #7c8aff !important;
-}
-
-/* ── Header ── */
-.main-header {
-    text-align: center;
-    margin-bottom: 4px;
-}
-
-.main-header h1 {
-    font-family: 'Outfit', sans-serif !important;
-    font-weight: 900 !important;
-    font-size: 2.5em !important;
-    background: linear-gradient(135deg, #e040fb 0%, #7c8aff 40%, #00e5ff 100%) !important;
-    -webkit-background-clip: text !important;
-    -webkit-text-fill-color: transparent !important;
-    background-size: 200% 200% !important;
-    animation: shimmer 4s ease-in-out infinite !important;
-    margin: 0 !important;
-    letter-spacing: -0.03em;
-}
-
-@keyframes shimmer {
-    0%, 100% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-}
-
-.main-subtitle {
-    color: #6b7094;
-    font-size: 0.92em;
-    font-weight: 400;
-    margin-top: 2px;
-}
-
-/* ── Settings Accordion ── */
-.settings-accordion {
-    border: 1px solid rgba(124, 138, 255, 0.12) !important;
-    border-radius: 12px !important;
-    background: rgba(14, 16, 41, 0.6) !important;
-    backdrop-filter: blur(10px) !important;
-    margin-bottom: 16px !important;
-}
-
-.settings-accordion .label-wrap {
-    padding: 10px 16px !important;
-    color: #9ca3c4 !important;
-    font-size: 0.88em !important;
-}
-
-.settings-accordion .label-wrap:hover {
-    color: #c8cdf5 !important;
-}
-
-/* ── Search Area ── */
-.search-area {
-    margin-bottom: 8px !important;
-}
-
-.search-area textarea {
-    background: rgba(255, 255, 255, 0.04) !important;
-    border: 1px solid rgba(124, 138, 255, 0.15) !important;
-    border-radius: 12px !important;
-    color: #e0e3f0 !important;
-    font-size: 0.95em !important;
-    padding: 14px 16px !important;
-    transition: border-color 0.3s ease, box-shadow 0.3s ease !important;
-}
-
-.search-area textarea:focus {
-    border-color: rgba(124, 138, 255, 0.4) !important;
-    box-shadow: 0 0 20px rgba(124, 138, 255, 0.1) !important;
-}
-
-.search-btn {
-    background: linear-gradient(135deg, #7b1fa2 0%, #3f51b5 50%, #00b0ff 100%) !important;
-    color: white !important;
     border: none !important;
-    border-radius: 12px !important;
-    font-weight: 600 !important;
-    font-size: 0.92em !important;
-    transition: all 0.3s ease !important;
-    box-shadow: 0 4px 15px rgba(63, 81, 181, 0.3) !important;
-    padding: 12px 24px !important;
+    box-shadow: none !important;
 }
 
-.search-btn:hover {
-    filter: brightness(1.15) !important;
-    box-shadow: 0 6px 25px rgba(63, 81, 181, 0.5) !important;
-    transform: translateY(-1px) !important;
+/* Remove backdrop blur on Gradio settings dialogs/modals */
+dialog::backdrop,
+.dialog-container,
+.dialog,
+.modal,
+.modal-backdrop {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
 }
 
-/* ── Watchlist Cards ── */
-.watchlist-card:hover {
-    background: linear-gradient(135deg, rgba(156, 39, 176, 0.14), rgba(0, 229, 255, 0.08)) !important;
-    border-color: rgba(156, 39, 176, 0.35) !important;
-    transform: translateY(-1px) !important;
-    box-shadow: 0 4px 12px rgba(156, 39, 176, 0.15) !important;
-}
-
-/* ── Output Report ── */
-.report-output {
-    background: rgba(255, 255, 255, 0.02) !important;
-    border: 1px solid rgba(124, 138, 255, 0.08) !important;
-    border-radius: 12px !important;
-    padding: 20px !important;
-}
-
-.report-output h1, .report-output h2, .report-output h3 {
-    color: #c8cdf5 !important;
-}
-
-.report-output table {
-    border-collapse: collapse !important;
-    width: 100% !important;
-}
-
-.report-output th {
-    background: rgba(124, 138, 255, 0.1) !important;
-    color: #7c8aff !important;
-    padding: 8px 12px !important;
-}
-
-.report-output td {
-    border: 1px solid rgba(124, 138, 255, 0.08) !important;
-    padding: 6px 12px !important;
-    color: #b0b5d4 !important;
-}
-
-/* ── Sky Image Preview Panel ── */
-.sky-image-container {
-    border: 1px solid rgba(0, 229, 255, 0.15) !important;
-    border-radius: 14px !important;
-    overflow: hidden !important;
-    background: linear-gradient(180deg, rgba(0, 229, 255, 0.03) 0%, rgba(14, 16, 41, 0.8) 100%) !important;
-    backdrop-filter: blur(12px) !important;
-    height: 450px !important;
-    position: relative !important;
-    transition: border-color 0.4s ease, box-shadow 0.4s ease !important;
-}
-
-.sky-image-container:hover {
-    border-color: rgba(0, 229, 255, 0.3) !important;
-    box-shadow: 0 0 30px rgba(0, 229, 255, 0.08), inset 0 0 20px rgba(0, 229, 255, 0.02) !important;
-}
-
-/* Image display — fill container, no cropping */
-.sky-image-container img {
-    object-fit: contain !important;
-    height: 100% !important;
-    width: 100% !important;
-    border-radius: 0 !important;
-}
-
-/* Style the label/header */
-.sky-image-container > .label-wrap,
-.sky-image-container > div > .label-wrap {
-    background: linear-gradient(90deg, rgba(0, 229, 255, 0.08), transparent) !important;
-    border-bottom: 1px solid rgba(0, 229, 255, 0.1) !important;
-    padding: 8px 14px !important;
-}
-
-.sky-image-container > .label-wrap span,
-.sky-image-container > div > .label-wrap span {
-    color: #00e5ff !important;
-    font-family: 'Outfit', sans-serif !important;
-    font-weight: 600 !important;
-    font-size: 0.9em !important;
-    letter-spacing: 0.02em !important;
-}
-
-/* Hide upload-related elements (drag-drop overlay, upload button, etc.) */
-.sky-image-container .upload-container,
-.sky-image-container [data-testid="upload-button"],
-.sky-image-container .image-container .upload-text,
-.sky-image-container .icon-wrap {
-    display: none !important;
-}
-
-/* Empty state placeholder */
-.sky-image-container .image-container {
-    background: radial-gradient(ellipse at center, rgba(0, 229, 255, 0.04) 0%, transparent 70%) !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-
-/* Download & fullscreen buttons styling */
-.sky-image-container button {
-    background: rgba(0, 229, 255, 0.1) !important;
-    border: 1px solid rgba(0, 229, 255, 0.2) !important;
-    color: #00e5ff !important;
-    border-radius: 6px !important;
-    transition: all 0.2s ease !important;
-}
-
-.sky-image-container button:hover {
-    background: rgba(0, 229, 255, 0.2) !important;
-    border-color: rgba(0, 229, 255, 0.4) !important;
-    box-shadow: 0 2px 8px rgba(0, 229, 255, 0.15) !important;
-}
-
-/* ── Fullscreen Fixes for Sky Image ── */
-.sky-image-container:fullscreen,
-.sky-image-container:-webkit-full-screen,
-.sky-image-container:-moz-full-screen,
-.sky-image-container:-ms-fullscreen,
-.sky-image-container *:fullscreen,
-.sky-image-container *:-webkit-full-screen {
-    height: 100% !important;
-    max-height: 100% !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    background-color: #0b0c15 !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-
-.sky-image-container:fullscreen img,
-.sky-image-container:-webkit-full-screen img,
-.sky-image-container:-moz-full-screen img,
-.sky-image-container:-ms-fullscreen img,
-.sky-image-container *:fullscreen img,
-.sky-image-container *:-webkit-full-screen img {
-    height: 100% !important;
-    width: 100% !important;
-    object-fit: contain !important;
-}
-
-.sky-image-container:fullscreen .upload-container,
-.sky-image-container:-webkit-full-screen .upload-container,
-.sky-image-container:-moz-full-screen .upload-container,
-.sky-image-container:-ms-fullscreen .upload-container,
-.sky-image-container *:fullscreen .upload-container,
-.sky-image-container *:-webkit-full-screen .upload-container {
-    display: block !important;
-    height: 100% !important;
-    width: 100% !important;
-}
-
-
-/* ── Watchlist Section ── */
-.watchlist-section {
-    border: 1px solid rgba(156, 39, 176, 0.12) !important;
-    border-radius: 12px !important;
-    background: rgba(156, 39, 176, 0.03) !important;
-    padding: 16px !important;
-    margin-top: 12px !important;
-}
-
-.watchlist-section-title {
-    color: #e040fb;
-    font-family: 'Outfit', sans-serif;
-    font-weight: 600;
-    font-size: 1.05em;
-    margin-bottom: 12px;
-    display: flex;
+/* Custom styling for delete buttons inside history and watchlist */
+.delete-history-btn, .delete-watchlist-btn {
+    display: inline-flex;
     align-items: center;
-    gap: 6px;
-}
-
-/* ── Misc overrides ── */
-.gr-group {
-    border-color: rgba(124, 138, 255, 0.1) !important;
+    justify-content: center;
+    min-width: 30px;
+    height: 100%;
+    color: #ff3c3c !important;
     background: transparent !important;
-}
-
-.gr-button.secondary {
-    background: rgba(255, 255, 255, 0.04) !important;
-    border: 1px solid rgba(124, 138, 255, 0.15) !important;
-    color: #9ca3c4 !important;
-    border-radius: 8px !important;
-    font-size: 0.82em !important;
-    transition: all 0.2s ease !important;
-}
-
-.gr-button.secondary:hover {
-    background: rgba(124, 138, 255, 0.08) !important;
-    border-color: rgba(124, 138, 255, 0.25) !important;
-    color: #c8cdf5 !important;
-}
-
-.gr-input, .gr-dropdown, .gr-radio {
-    background: rgba(255, 255, 255, 0.03) !important;
-    border-color: rgba(124, 138, 255, 0.12) !important;
-    color: #b0b5d4 !important;
-}
-
-/* Examples styling */
-.gr-examples {
     border: none !important;
-    background: transparent !important;
+    cursor: pointer !important;
+    flex-shrink: 0; /* Prevents button from collapsing */
+    transition: transform 0.2s ease !important;
 }
 
-.gr-sample-textbox {
-    background: rgba(124, 138, 255, 0.06) !important;
-    border: 1px solid rgba(124, 138, 255, 0.12) !important;
-    border-radius: 8px !important;
-    color: #9ca3c4 !important;
-    font-size: 0.85em !important;
-    transition: all 0.2s ease !important;
+.delete-history-btn:hover, .delete-watchlist-btn:hover {
+    transform: scale(1.1) !important;
+    background: rgba(255, 60, 60, 0.1) !important;
+    border-radius: 4px !important;
 }
 
-.gr-sample-textbox:hover {
-    background: rgba(124, 138, 255, 0.12) !important;
-    border-color: rgba(124, 138, 255, 0.25) !important;
-    color: #c8cdf5 !important;
+/* Ensure text truncation doesn't push the button out of view */
+.history-item-content, .watchlist-item-content {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-/* Labels */
-label span {
-    color: #8a8fb5 !important;
-    font-weight: 500 !important;
-    font-size: 0.88em !important;
-}
-
-/* Scrollbar */
-::-webkit-scrollbar {
-    width: 5px;
-}
-
-::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-    background: rgba(124, 138, 255, 0.2);
-    border-radius: 10px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-    background: rgba(124, 138, 255, 0.35);
-}
-
-/* ── Status toast ── */
-.status-toast {
-    font-size: 0.85em !important;
-    color: #7c8aff !important;
+/* Hide delete triggers from view, while leaving them rendered for JS click */
+#btn-delete-history, #btn-delete-watchlist {
+    display: none !important;
 }
 """
 
@@ -918,165 +674,183 @@ label span {
 with gr.Blocks(title="StarForge — Exoplanet Research Assistant") as app:
     session_state = gr.State("")
 
+    # Hidden components for deletion events from custom HTML
+    hidden_delete_history_target = gr.Textbox(visible=False, elem_id="hidden-delete-history-target")
+    hidden_delete_watchlist_target = gr.Textbox(visible=False, elem_id="hidden-delete-watchlist-target")
+    btn_delete_history = gr.Button(visible=True, elem_id="btn-delete-history")
+    btn_delete_watchlist = gr.Button(visible=True, elem_id="btn-delete-watchlist")
+
     # ── Left Sidebar: Conversation History ──
     with gr.Sidebar(label="🔭 StarForge", position="left", width=300, open=True):
         gr.HTML("""
             <div class="sidebar-brand">
-                <h2>🔭 STARFORGE</h2>
-                <div style="font-size: 0.75em; color: #4a4f6e; margin-top: 2px;">Exoplanet Research AI</div>
+                <h2>StarForge</h2>
+                <div class="main-subtitle" style="font-size: 0.95em; margin-top: 4px;">Exoplanet Research AI</div>
             </div>
         """)
+        btn_refresh_history = gr.Button("↻ Refresh History", size="sm", variant="secondary")
 
         gr.HTML("<div class='sidebar-section-label'>Research History</div>")
         history_panel = gr.HTML(
             value=format_history_html(memory_manager.get_history()),
             elem_id="history-panel"
         )
-        btn_refresh_history = gr.Button("↻ Refresh", size="sm", variant="secondary")
 
     # ── Main Content Area ──
 
     # Header
     gr.HTML("""
-        <div class="main-header">
-            <h1>🔭 STARFORGE</h1>
-            <div class="main-subtitle">AI-powered Multi-Agent Exoplanet Research Assistant</div>
+        <div class="main-header" style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-family: 'Outfit', sans-serif; font-weight: 900; font-size: 2.8em; background: linear-gradient(135deg, #e040fb 0%, #7c8aff 40%, #00e5ff 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0;">🔭 StarForge Agent</h1>
+            <div class="main-subtitle" style="color: #9ca3c4; font-size: 1.1em; font-weight: 400; margin-top: 4px;">AI-powered Multi-Agent Exoplanet Research Assistant</div>
         </div>
     """)
 
-    # Settings Accordion
-    with gr.Accordion("⚙️  Settings & Preferences", open=False, elem_classes="settings-accordion"):
-        prefs = memory_manager.get_preferences()
-        with gr.Row():
-            input_detail = gr.Radio(
-                choices=["comprehensive", "compact", "stellar-only"],
-                value=prefs.get("detail_level", "comprehensive"),
-                label="Report Detail Level",
-                scale=1
-            )
-            input_survey = gr.Dropdown(
-                choices=["JWST/HST (MAST)", "DSS", "DSS2 Red", "2MASS-J", "WISE 3.4", "GALEX Near UV", "RASS"],
-                value=prefs.get("default_survey", "JWST/HST (MAST)"),
-                label="Default SkyView Survey",
-                scale=1
-            )
-            input_color_lut = gr.Dropdown(
-                choices=["Original/None", "gray", "Fire", "Ice", "Spectrum"],
-                value=prefs.get("skyview_color_lut", "Original/None" if prefs.get("default_survey") == "JWST/HST (MAST)" else "gray"),
-                label="Color Palette",
-                scale=1
-            )
-            input_fov = gr.Slider(
-                minimum=5,
-                maximum=60,
-                step=1,
-                value=prefs.get("skyview_fov_arcmin", 15),
-                label="Field of View (Arcminutes)",
-                scale=1
-            )
-            
-            def auto_select_palette(survey):
-                if survey == "JWST/HST (MAST)":
-                    return "Original/None"
-                return gr.update()
-            
-            input_survey.change(fn=auto_select_palette, inputs=[input_survey], outputs=[input_color_lut])
-        with gr.Row():
-            btn_save_prefs = gr.Button("💾  Save Preferences", size="sm", variant="secondary")
-            output_prefs_status = gr.HTML(value="", elem_classes="status-toast")
+    with gr.Tabs():
+        with gr.Tab("Dashboard"):
+            # Search Bar and Suggestions in a Panel
+            with gr.Group(elem_classes="glass-panel"):
+                with gr.Row(elem_classes="search-area"):
+                    input_query = gr.Textbox(
+                        placeholder="Search for a target system — e.g. 'TRAPPIST-1e', 'Kepler-22b', 'Proxima Centauri b'…",
+                        label="Target System Query",
+                        scale=4,
+                        elem_id="search-input",
+                        lines=1
+                    )
+                    btn_submit = gr.Button(
+                        "🔍  Analyze System",
+                        variant="primary",
+                        elem_classes="search-btn",
+                        scale=1
+                    )
 
-    # Search Bar
-    with gr.Row(elem_classes="search-area"):
-        input_query = gr.Textbox(
-            placeholder="Search for a target system — e.g. 'TRAPPIST-1e', 'Kepler-22b', 'Proxima Centauri b'…",
-            label="Target System Query",
-            scale=4,
-            elem_id="search-input",
-            lines=1
-        )
-        btn_submit = gr.Button(
-            "🔍  Analyze System",
-            variant="primary",
-            elem_classes="search-btn",
-            scale=1
-        )
-
-    # Example Suggestions
-    gr.Examples(
-        examples=[
-            "Tell me everything about TRAPPIST-1e",
-            "Retrieve parameters for Kepler-22b",
-            "Analyze GJ 1214 b",
-            "List potentially habitable zone exoplanets",
-            "What are the latest papers on exoplanet atmospheres?"
-        ],
-        inputs=input_query,
-        label="💡 Quick Suggestions"
-    )
-
-    # ── Results: Two-Column Layout ──
-    with gr.Row():
-        # Left: Report
-        with gr.Column(scale=2):
-            output_report = gr.Markdown(
-                label="Research Brief",
-                value="Enter a target system above to generate a comprehensive exoplanet research profile.",
-                elem_classes="report-output",
-                latex_delimiters=[
-                    {"left": "$$", "right": "$$", "display": True},
-                    {"left": "$", "right": "$", "display": False}
-                ]
-            )
-
-        # Right: Sky Image + Watchlist
-        with gr.Column(scale=1):
-            output_image = gr.Image(
-                label="🌌 Target Sky Image",
-                interactive=False,
-                height=450,
-                elem_classes="sky-image-container"
-            )
-
-            # ── Watchlist Section ──
-            gr.HTML("<div class='watchlist-section-title'>⭐ Watchlist</div>")
-            watchlist_panel = gr.HTML(
-                value=format_watchlist_html(memory_manager.get_watchlist()),
-                elem_id="watchlist-panel"
-            )
-
-            # Add to Watchlist (compact form)
-            with gr.Row():
-                input_watch_target = gr.Textbox(
-                    label="Target",
-                    placeholder="e.g. TRAPPIST-1e",
-                    scale=2,
-                    lines=1
-                )
-                input_watch_notes = gr.Textbox(
-                    label="Notes",
-                    placeholder="e.g. Habitable zone",
-                    scale=2,
-                    lines=1
+                # Example Suggestions
+                gr.Examples(
+                    examples=[
+                        "Tell me everything about TRAPPIST-1e",
+                        "Retrieve parameters for Kepler-22b",
+                        "Analyze GJ 1214 b",
+                        "List potentially habitable zone exoplanets",
+                        "What are the latest papers on exoplanet atmospheres?"
+                    ],
+                    inputs=input_query,
+                    label="💡 Quick Suggestions"
                 )
 
+            # ── Results: Two-Column Layout ──
             with gr.Row():
-                btn_add_watch = gr.Button("＋ Add", size="sm", variant="secondary", scale=1)
-                btn_remove_watch = gr.Button("－ Remove", size="sm", variant="secondary", scale=1)
-                btn_refresh_watchlist = gr.Button("↻", size="sm", variant="secondary", scale=0)
+                # Left: Report
+                with gr.Column(scale=2):
+                    output_report = gr.Markdown(
+                        label="Research Brief",
+                        value="Enter a target system above to generate a comprehensive exoplanet research profile.",
+                        elem_classes="report-output",
+                        latex_delimiters=[
+                            {"left": "$$", "right": "$$", "display": True},
+                            {"left": "$", "right": "$", "display": False}
+                        ]
+                    )
 
-            output_watch_status = gr.HTML(value="", elem_classes="status-toast")
+                # Right: Sky Image + Watchlist
+                with gr.Column(scale=1):
+                    output_image = gr.Image(
+                        label="🌌 Target Sky Image",
+                        interactive=False,
+                        height=450,
+                        elem_classes="sky-image-container"
+                    )
+
+                    # ── Watchlist Section ──
+                    with gr.Group(elem_classes="watchlist-section"):
+                        gr.HTML("<div class='watchlist-section-title'>⭐ Watchlist</div>")
+                        watchlist_panel = gr.HTML(
+                            value=format_watchlist_html(memory_manager.get_watchlist()),
+                            elem_id="watchlist-panel"
+                        )
+
+                        # Add to Watchlist (compact form)
+                        gr.HTML("<div class='watchlist-section-title' style='margin-top: 15px;'>Add to Watchlist</div>")
+                        input_watch_target = gr.Textbox(
+                            label="Target",
+                            placeholder="e.g. TRAPPIST-1e",
+                            lines=1
+                        )
+                        input_watch_notes = gr.Textbox(
+                            label="Notes",
+                            placeholder="e.g. Habitable zone",
+                            lines=1
+                        )
+
+                        with gr.Row(equal_height=True):
+                            btn_add_watch = gr.Button("＋ Add to Watchlist", size="sm", variant="secondary", scale=3, min_width=100, elem_classes="btn-neon-add")
+                            btn_refresh_watchlist = gr.Button("↻", size="sm", variant="secondary", scale=1, min_width=30)
+
+                        output_watch_status = gr.HTML(value="", elem_classes="status-toast")
+
+        with gr.Tab("Settings"):
+            prefs = memory_manager.get_preferences()
+            with gr.Row():
+                input_detail = gr.Radio(
+                    choices=["comprehensive", "compact", "stellar-only"],
+                    value=prefs.get("detail_level", "comprehensive"),
+                    label="Report Detail Level",
+                    scale=1
+                )
+                input_survey = gr.Dropdown(
+                    choices=["JWST/HST (MAST)", "DSS", "DSS2 Red", "2MASS-J", "WISE 3.4", "GALEX Near UV", "RASS"],
+                    value=prefs.get("default_survey", "JWST/HST (MAST)"),
+                    label="Default SkyView Survey",
+                    scale=1
+                )
+                input_color_lut = gr.Dropdown(
+                    choices=["Original/None", "gray", "Fire", "Ice", "Spectrum"],
+                    value=prefs.get("skyview_color_lut", "Original/None" if prefs.get("default_survey") == "JWST/HST (MAST)" else "gray"),
+                    label="Color Palette",
+                    scale=1
+                )
+                input_fov = gr.Slider(
+                    minimum=5,
+                    maximum=300,
+                    step=1,
+                    value=prefs.get("skyview_fov_arcmin", 15),
+                    label="Field of View (Arcminutes)",
+                    scale=1
+                )
+                
+                def auto_select_palette(survey):
+                    if survey == "JWST/HST (MAST)":
+                        return "Original/None"
+                    return gr.update()
+                
+                input_survey.change(fn=auto_select_palette, inputs=[input_survey], outputs=[input_color_lut])
+            with gr.Row():
+                btn_save_prefs = gr.Button("💾  Save Preferences", size="sm", variant="secondary")
+                output_prefs_status = gr.HTML(value="", elem_classes="status-toast")
 
     # ---------------------------------------------------------------------------
     # Event Handlers
     # ---------------------------------------------------------------------------
 
+    def show_loading():
+        loading_msg = "### ⏳ Analyzing Target...\n\nPlease patiently wait while the AI agents conduct their research. This may take a minute.\n\n> **Note:** Sometimes detailed image data from recent missions may be unavailable or locked due to the Exclusive Access Period (EAP)."
+        return loading_msg, None
+        
     btn_submit.click(
+        fn=show_loading,
+        inputs=None,
+        outputs=[output_report, output_image]
+    ).then(
         fn=run_research,
         inputs=[input_query, session_state],
         outputs=[output_report, output_image, session_state, history_panel, input_watch_target]
     )
 
     input_query.submit(
+        fn=show_loading,
+        inputs=None,
+        outputs=[output_report, output_image]
+    ).then(
         fn=run_research,
         inputs=[input_query, session_state],
         outputs=[output_report, output_image, session_state, history_panel, input_watch_target]
@@ -1085,12 +859,6 @@ with gr.Blocks(title="StarForge — Exoplanet Research Assistant") as app:
     btn_add_watch.click(
         fn=add_watchlist,
         inputs=[input_watch_target, input_watch_notes, output_report],
-        outputs=[output_watch_status, watchlist_panel]
-    )
-
-    btn_remove_watch.click(
-        fn=remove_watchlist,
-        inputs=[input_watch_target],
         outputs=[output_watch_status, watchlist_panel]
     )
 
@@ -1110,6 +878,29 @@ with gr.Blocks(title="StarForge — Exoplanet Research Assistant") as app:
         fn=save_preferences,
         inputs=[input_detail, input_survey, input_color_lut, input_fov],
         outputs=[output_prefs_status]
+    )
+
+    # Deletion callbacks
+    def delete_history_item(timestamp):
+        memory_manager.remove_from_history(timestamp)
+        return format_history_html(memory_manager.get_history())
+
+    def delete_watchlist_item(target_name):
+        memory_manager.remove_from_watchlist(target_name)
+        return format_watchlist_html(memory_manager.get_watchlist())
+
+    btn_delete_history.click(
+        fn=delete_history_item,
+        inputs=[hidden_delete_history_target],
+        outputs=[history_panel],
+        js="() => { return window.tempHistoryDeleteVal || ''; }"
+    )
+
+    btn_delete_watchlist.click(
+        fn=delete_watchlist_item,
+        inputs=[hidden_delete_watchlist_target],
+        outputs=[watchlist_panel],
+        js="() => { return window.tempWatchlistDeleteVal || ''; }"
     )
 
 import atexit
@@ -1149,4 +940,4 @@ def cleanup_mcp_toolsets():
 atexit.register(cleanup_mcp_toolsets)
 
 if __name__ == "__main__":
-    app.launch(css=theme_css)
+    app.launch(css=theme_css, head=js_script)
