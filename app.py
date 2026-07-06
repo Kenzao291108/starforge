@@ -19,7 +19,7 @@ Image.MAX_IMAGE_PIXELS = None
 load_dotenv()
 
 # Add project root to path
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
 from google.adk import Runner
@@ -601,7 +601,7 @@ import os
 import base64
 
 # Load CSS themes
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+base_dir = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(base_dir, "ui", "dark_theme.css"), "r", encoding="utf-8") as f:
     dark_css = f.read()
     

@@ -150,12 +150,12 @@ The Gradio web interface features a stunning dark-theme cosmic dashboard, allowi
 
 #### 🐧 Linux / macOS
 ```bash
-python3 ui/app.py
+python3 app.py
 ```
 
 #### 🪟 Windows
 ```powershell
-python ui/app.py
+python app.py
 ```
 
 Open the local URL (typically `http://127.0.0.1:7860`) in your browser.
