@@ -95,18 +95,47 @@ cd starforge
 ```
 
 ### 3. Initialize Virtual Environment & Install Dependencies
+
+#### 🐧 Linux / macOS
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-### 4. Configure Environment Variables
-Copy `.env.example` to `.env` and fill in your Gemini API key:
-```bash
-cp starforge/.env.example starforge/.env
+#### 🪟 Windows (PowerShell)
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .
 ```
-Open `starforge/.env` and update:
+
+#### 🪟 Windows (Command Prompt)
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install -e .
+```
+
+### 4. Configure Environment Variables
+Copy the example environment file and fill in your Gemini API key:
+
+#### 🐧 Linux / macOS
+```bash
+cp .env.example .env
+```
+
+#### 🪟 Windows (PowerShell)
+```powershell
+Copy-Item .env.example .env
+```
+
+#### 🪟 Windows (Command Prompt)
+```cmd
+copy .env.example .env
+```
+
+After copying, open `.env` and update:
 ```env
 GOOGLE_API_KEY=your-actual-api-key-here
 NASA_API_KEY=DEMO_KEY
@@ -118,26 +147,53 @@ NASA_API_KEY=DEMO_KEY
 
 ### Running the Web UI (Gradio)
 The Gradio web interface features a stunning dark-theme cosmic dashboard, allowing you to run research, view sky images, and manage your exoplanet watchlist.
+
+#### 🐧 Linux / macOS
 ```bash
-python starforge/ui/app.py
+python3 ui/app.py
 ```
+
+#### 🪟 Windows
+```powershell
+python ui/app.py
+```
+
 Open the local URL (typically `http://127.0.0.1:7860`) in your browser.
 
 ### Running the Programmatic Demo
 You can execute the entire multi-agent pipeline programmatically to generate and save a research brief to disk:
+
+#### 🐧 Linux / macOS
 ```bash
-python starforge/demo/demo_trappist1.py
+python3 demo/demo_trappist1.py
 ```
-This saves the completed markdown brief to `starforge/demo/sample_reports/trappist1e_brief.md`.
+
+#### 🪟 Windows
+```powershell
+python demo/demo_trappist1.py
+```
+
+This saves the completed markdown brief to `demo/sample_reports/trappist1e_brief.md`.
 
 ### Running the Test Suite
 StarForge comes with a comprehensive suite of unit and integration tests (including mock LLM harnesses to test agent chains offline):
+
+#### 🐧 Linux / macOS
 ```bash
 # Test custom MCP tools
-python starforge/tests/test_mcp_quick.py
+python3 tests/test_mcp_quick.py
 
 # Test agent orchestration workflow end-to-end
-pytest starforge/tests/test_agents.py -v
+pytest tests/test_agents.py -v
+```
+
+#### 🪟 Windows
+```powershell
+# Test custom MCP tools
+python tests/test_mcp_quick.py
+
+# Test agent orchestration workflow end-to-end
+pytest tests/test_agents.py -v
 ```
 
 ---
